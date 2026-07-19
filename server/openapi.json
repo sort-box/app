@@ -1,0 +1,316 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Untie Server API",
+    "version": "0.1.0",
+    "description": "HTTP API for Untie. Authentication is provided by Clerk session tokens. Browser clients on the same origin may use the __session cookie; other clients may send the same token as a Bearer credential."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8080",
+      "description": "Local development"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Health",
+      "description": "Process and dependency health checks"
+    },
+    {
+      "name": "Authentication",
+      "description": "Authenticated Clerk session information"
+    },
+    {
+      "name": "Documentation",
+      "description": "Machine-readable API contract"
+    }
+  ],
+  "paths": {
+    "/health/live": {
+      "get": {
+        "operationId": "getLiveness",
+        "summary": "Check process liveness",
+        "description": "Confirms that the server process is running. This endpoint does not contact Clerk.",
+        "tags": [
+          "Health"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The server process is running.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LivenessResponse"
+                },
+                "example": {
+                  "status": "ok"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "getReadiness",
+        "summary": "Check service readiness",
+        "description": "Confirms that configuration is valid and a usable Clerk JWKS can be obtained from the live cache or Clerk.",
+        "tags": [
+          "Health"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The service is ready to authenticate requests.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                },
+                "example": {
+                  "status": "ready"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No usable Clerk JWKS is currently available.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                },
+                "example": {
+                  "status": "unavailable"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me": {
+      "get": {
+        "operationId": "getCurrentSession",
+        "summary": "Get the authenticated Clerk identity",
+        "description": "Verifies the Clerk v2 session JWT and returns its immutable user and session identifiers.",
+        "tags": [
+          "Authentication"
+        ],
+        "security": [
+          {
+            "clerkSessionCookie": []
+          },
+          {
+            "clerkBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Clerk session is valid.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentSession"
+                },
+                "example": {
+                  "user_id": "user_3Gjqdq6pmlpi9zMZYiofa7ZSjlL",
+                  "session_id": "sess_3GjqkhFs4I4BaEAM2nMY8qVn3lR"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "getOpenApiDocument",
+        "summary": "Get the OpenAPI contract",
+        "tags": [
+          "Documentation"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The OpenAPI 3.1 contract.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/vnd.oai.openapi+json;version=3.1": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "clerkSessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__session",
+        "description": "Short-lived Clerk session JWT sent automatically by a same-origin browser."
+      },
+      "clerkBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Short-lived Clerk v2 session JWT."
+      }
+    },
+    "headers": {
+      "RequestId": {
+        "description": "Request correlation identifier generated by the server when the client did not supply one.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "responses": {
+      "Unauthenticated": {
+        "description": "Authentication is missing, malformed, expired, unverifiable, from a disallowed authorized party, or otherwise invalid.",
+        "headers": {
+          "Cache-Control": {
+            "description": "Prevents authentication failures from being cached.",
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          },
+          "x-request-id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "error": {
+                "code": "unauthenticated",
+                "message": "Authentication is required."
+              }
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "LivenessResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok"
+          }
+        }
+      },
+      "ReadinessResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "unavailable"
+            ]
+          }
+        }
+      },
+      "CurrentSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "user_id",
+          "session_id"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "pattern": "^user_[A-Za-z0-9]+$",
+            "description": "Immutable Clerk user identifier."
+          },
+          "session_id": {
+            "type": "string",
+            "pattern": "^sess_[A-Za-z0-9]+$",
+            "description": "Clerk session identifier."
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        }
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "const": "unauthenticated"
+          },
+          "message": {
+            "type": "string",
+            "const": "Authentication is required."
+          }
+        }
+      }
+    }
+  }
+}
