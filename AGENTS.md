@@ -160,6 +160,106 @@ tanstackIntent:
 
 - All UI/UX should preferably be built with shadcn/ui components. Before hand-rolling custom UI, search the shadcn registries (via the shadcn MCP tools) for an existing component and install it with `bunx shadcn@latest add <component>`.
 
+# Project Architecture
+
+Use Ports and Adapters (hexagonal architecture) for backend and integration
+code. Keep the dependency direction pointing inward: transport and provider
+adapters may depend on application and domain code, but application and domain
+code must not depend on frameworks, SDKs, databases, or provider-specific
+types.
+
+## Layers and Responsibilities
+
+- **Domain and shared types** define provider-neutral values, errors, and
+  invariants. They must not import TanStack Start, Convex, Clerk, AWS SDKs, or
+  other infrastructure packages.
+- **Ports** are small TypeScript interfaces describing capabilities the
+  application actually needs. Define ports from application requirements, not
+  by copying a vendor SDK.
+- **Application services** implement use cases and orchestration. Composite
+  workflows such as move-by-prefix, recursive deletion, authorization-aware
+  operations, batching, and partial-failure handling belong here rather than in
+  provider adapters.
+- **Outbound adapters** implement ports for infrastructure providers such as
+  S3, Convex, or external APIs. Adapters translate provider inputs, outputs, and
+  errors into application-owned types; provider SDK types must not escape the
+  adapter.
+- **Inbound adapters** such as TanStack server functions, server routes, and
+  Convex functions validate transport input, authenticate and authorize the
+  caller, invoke an application service, and serialize its result. They must
+  not contain provider orchestration or instantiate SDK clients.
+- **Composition roots** construct concrete adapters and inject them into
+  application services. Read environment configuration and select providers in
+  server-only composition-root modules, not in domain or application code.
+
+Prefer feature-first organization for UI code and capability-first
+organization for server integrations. For example:
+
+```text
+src/
+  features/<feature>/          # Client-facing components, hooks, and schemas
+  functions/*.functions.ts     # TanStack server-function inbound adapters
+  server/<capability>/
+    <port>.ts                  # Provider-neutral ports, types, and errors
+    <use-case>.server.ts       # Application services
+    <capability>.server.ts     # Composition root
+    providers/<provider>/      # Outbound adapters
+```
+
+Use `.server.ts` for secrets, SDK clients, provider adapters, and other
+server-only implementation. Keep client-safe schemas and transport types in
+files without the `.server` suffix. Convex queries, mutations, and actions are
+inbound adapters; keep reusable business workflows in plain TypeScript helpers
+or application services instead of coupling them to a Convex context.
+
+Do not introduce a port, adapter, factory, or abstraction until there is a real
+application boundary to isolate. One port may have one implementation. Do not
+mirror entire third-party SDKs, add a dependency-injection framework, or create
+generic repository layers over already-purposeful ports.
+
+## Result Types and Error Handling
+
+Use `neverthrow` for operations that can fail. Expected failures must be
+represented explicitly:
+
+- Use `Result<T, E>` for synchronous operations.
+- Use `ResultAsync<T, E>` for asynchronous operations instead of
+  `Promise<Result<T, E>>`.
+- Use `ok`, `err`, `okAsync`, `errAsync`, and
+  `ResultAsync.fromPromise(..., mapError)` at exception-throwing boundaries.
+- Compose workflows with `map`, `mapErr`, `andThen`, `orElse`, and `match`
+  instead of throwing and catching expected failures.
+- Define application-owned discriminated error unions. Do not use bare
+  `Error`, `unknown`, strings, or provider exception classes as a public error
+  type.
+- Adapters must catch or wrap provider promise rejections and translate them
+  into typed application errors. Public error messages must be
+  provider-neutral and must not contain raw SDK error text, credentials,
+  provider configuration, response bodies, request IDs, stack traces, or
+  signed values. Preserve the original exception as a server logging cause when
+  useful, but do not expose it across trust boundaries.
+- Reserve thrown exceptions for programmer errors, violated invariants, or
+  truly unrecoverable defects.
+
+`neverthrow` class instances are internal values. Before returning a result
+through a TanStack server function, server route, Convex function, JSON API, or
+other serialization boundary, convert it to a plain discriminated union:
+
+```ts
+type ApiResult<T, E> =
+  | { ok: true; value: T }
+  | { ok: false; error: E }
+```
+
+For bulk operations, distinguish failure of the overall operation from
+per-item failures. Return `ResultAsync<BulkResult, OperationError>`, where an
+`Ok` bulk result may contain both successful items and typed per-item failures.
+Do not pretend multi-resource provider operations are transactional.
+
+Test application services against fake or in-memory port implementations, and
+run shared contract tests against each real adapter. Test observable port and
+use-case behavior rather than SDK command construction details.
+
 # AGENTS.md
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
