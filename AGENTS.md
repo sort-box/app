@@ -200,7 +200,7 @@ src/
   features/<feature>/          # Client-facing components, hooks, and schemas
   functions/*.functions.ts     # TanStack server-function inbound adapters
   server/<capability>/
-    <capability>.ts            # Ports, domain types, and domain errors
+    <port>.ts                  # Provider-neutral ports, types, and errors
     <use-case>.server.ts       # Application services
     <capability>.server.ts     # Composition root
     providers/<provider>/      # Outbound adapters
@@ -233,8 +233,11 @@ represented explicitly:
   `Error`, `unknown`, strings, or provider exception classes as a public error
   type.
 - Adapters must catch or wrap provider promise rejections and translate them
-  into typed application errors. Preserve the original exception as a server
-  logging cause when useful, but do not expose it across trust boundaries.
+  into typed application errors. Public error messages must be
+  provider-neutral and must not contain raw SDK error text, credentials,
+  provider configuration, response bodies, request IDs, stack traces, or
+  signed values. Preserve the original exception as a server logging cause when
+  useful, but do not expose it across trust boundaries.
 - Reserve thrown exceptions for programmer errors, violated invariants, or
   truly unrecoverable defects.
 
