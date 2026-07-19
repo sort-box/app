@@ -156,6 +156,10 @@ tanstackIntent:
     for: "Use dotenvx to run commands with environment variables, manage multiple .env files, expand variables, and encrypt env files for safe commits and CI/CD."
 <!-- intent-skills:end -->
 
+# UI/UX
+
+- All UI/UX should preferably be built with shadcn/ui components. Before hand-rolling custom UI, search the shadcn registries (via the shadcn MCP tools) for an existing component and install it with `bunx shadcn@latest add <component>`.
+
 # AGENTS.md
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
