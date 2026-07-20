@@ -6,6 +6,7 @@ import {
   internalQuery,
   type MutationCtx,
 } from "./_generated/server"
+import { getOrCreateFileUsage } from "./userUsage"
 
 async function ownedFile(
   ctx: MutationCtx,
@@ -34,17 +35,10 @@ export const discardIncomplete = internalMutation({
       file.operation !== undefined &&
       file.usageBackfilledAt !== undefined
     ) {
-      const usage = await ctx.db
-        .query("fileUsage")
-        .withIndex("by_owner", (q) =>
-          q.eq("ownerTokenIdentifier", file.ownerTokenIdentifier)
-        )
-        .unique()
-      if (usage) {
-        await ctx.db.patch(usage._id, {
-          reservedBytes: Math.max(0, usage.reservedBytes - file.declaredSize),
-        })
-      }
+      const usage = await getOrCreateFileUsage(ctx, file.ownerTokenIdentifier)
+      await ctx.db.patch(usage._id, {
+        reservedBytes: Math.max(0, usage.reservedBytes - file.declaredSize),
+      })
     }
     const entry = await ctx.db
       .query("fileEntries")
@@ -106,17 +100,10 @@ export const completeCleanup = internalMutation({
       file.operation !== undefined &&
       file.usageBackfilledAt !== undefined
     ) {
-      const usage = await ctx.db
-        .query("fileUsage")
-        .withIndex("by_owner", (q) =>
-          q.eq("ownerTokenIdentifier", file.ownerTokenIdentifier)
-        )
-        .unique()
-      if (usage) {
-        await ctx.db.patch(usage._id, {
-          reservedBytes: Math.max(0, usage.reservedBytes - file.declaredSize),
-        })
-      }
+      const usage = await getOrCreateFileUsage(ctx, file.ownerTokenIdentifier)
+      await ctx.db.patch(usage._id, {
+        reservedBytes: Math.max(0, usage.reservedBytes - file.declaredSize),
+      })
     }
     const entry = await ctx.db
       .query("fileEntries")

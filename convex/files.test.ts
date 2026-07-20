@@ -202,6 +202,52 @@ describe("files authorization", () => {
     ).rejects.toThrow("QUOTA_EXCEEDED")
   })
 
+  it("enforces the user's file entitlement and records unified usage", async () => {
+    const t = testBackend()
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userEntitlements", {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+        kind: "file",
+        storageLimitBytes: 10,
+      })
+    })
+
+    await t.mutation(internal.fileRest.createUpload, {
+      ...owner,
+      path: "/within-limit.txt",
+      parentPath: "/",
+      basename: "within-limit.txt",
+      contentType: "text/plain",
+      size: 10,
+    })
+    await expect(
+      t.mutation(internal.fileRest.createUpload, {
+        ...owner,
+        path: "/over-limit.txt",
+        parentPath: "/",
+        basename: "over-limit.txt",
+        contentType: "text/plain",
+        size: 1,
+      })
+    ).rejects.toThrow("QUOTA_EXCEEDED")
+
+    const usage = await t.run(async (ctx) =>
+      ctx.db
+        .query("userUsage")
+        .withIndex("by_owner_and_kind", (q) =>
+          q
+            .eq("ownerTokenIdentifier", owner.ownerTokenIdentifier)
+            .eq("kind", "file")
+        )
+        .unique()
+    )
+    expect(usage).toMatchObject({
+      kind: "file",
+      reservedBytes: 10,
+      usedBytes: 0,
+    })
+  })
+
   it("lets a retry supersede a stale pending upload at the same path", async () => {
     const t = testBackend()
     const fourGiB = 4 * 1024 ** 3
@@ -858,6 +904,61 @@ describe("document embedding lifecycle", () => {
       embeddingEntryId: "replacement-entry",
       embeddingStatus: "embedding",
     })
+  })
+})
+
+describe("unified usage migration", () => {
+  it("backfills file usage and the default entitlement idempotently", async () => {
+    const t = testBackend()
+    await t.run(async (ctx) => {
+      await ctx.db.insert("fileUsage", {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+        reservedBytes: 25,
+        usedBytes: 75,
+      })
+    })
+
+    await t.mutation(internal.migrations.backfillUnifiedFileUsage, {})
+    await t.mutation(internal.migrations.backfillUnifiedFileUsage, {
+      reset: true,
+    })
+
+    const result = await t.run(async (ctx) => ({
+      usage: await ctx.db
+        .query("userUsage")
+        .withIndex("by_owner_and_kind", (q) =>
+          q
+            .eq("ownerTokenIdentifier", owner.ownerTokenIdentifier)
+            .eq("kind", "file")
+        )
+        .unique(),
+      entitlement: await ctx.db
+        .query("userEntitlements")
+        .withIndex("by_owner_and_kind", (q) =>
+          q
+            .eq("ownerTokenIdentifier", owner.ownerTokenIdentifier)
+            .eq("kind", "file")
+        )
+        .unique(),
+    }))
+    expect(result.usage).toMatchObject({
+      kind: "file",
+      reservedBytes: 25,
+      usedBytes: 75,
+    })
+    expect(result.entitlement).toMatchObject({
+      kind: "file",
+      storageLimitBytes: 10 * 1024 ** 3,
+    })
+
+    await t.run(async (ctx) => {
+      await ctx.db.patch(result.usage!._id, { usedBytes: 100 })
+    })
+    await t.mutation(internal.migrations.backfillUnifiedFileUsage, {
+      reset: true,
+    })
+    const current = await t.run(async (ctx) => ctx.db.get(result.usage!._id))
+    expect(current).toMatchObject({ usedBytes: 100 })
   })
 })
 
