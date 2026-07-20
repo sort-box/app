@@ -44,6 +44,12 @@ function transitionError(error: unknown): Response {
   if (message.includes("PATH_CONFLICT")) {
     return Response.json({ code: "PATH_CONFLICT" }, { status: 409 })
   }
+  if (message.includes("DIRECTORY_NOT_EMPTY")) {
+    return Response.json({ code: "DIRECTORY_NOT_EMPTY" }, { status: 409 })
+  }
+  if (message.includes("DIRECTORY_TOO_LARGE")) {
+    return Response.json({ code: "DIRECTORY_TOO_LARGE" }, { status: 400 })
+  }
   if (message.includes("QUOTA_EXCEEDED")) {
     return Response.json({ code: "QUOTA_EXCEEDED" }, { status: 413 })
   }
@@ -293,6 +299,49 @@ http.route({
             await ctx.runMutation(internal.fileRest.move, {
               ...owned,
               fileId: input.fileId as never,
+              path: input.path,
+              parentPath: input.parentPath,
+              basename: input.basename,
+            })
+          )
+        case "createDirectory":
+          if (
+            typeof input.path !== "string" ||
+            typeof input.parentPath !== "string" ||
+            typeof input.basename !== "string"
+          ) {
+            return new Response("Invalid request", { status: 400 })
+          }
+          return Response.json(
+            await ctx.runMutation(internal.fileRest.createDirectory, {
+              ...owned,
+              path: input.path,
+              parentPath: input.parentPath,
+              basename: input.basename,
+            })
+          )
+        case "deleteDirectory":
+          if (typeof input.path !== "string") {
+            return new Response("Invalid request", { status: 400 })
+          }
+          await ctx.runMutation(internal.fileRest.deleteDirectory, {
+            ...owned,
+            path: input.path,
+          })
+          return Response.json(null)
+        case "moveDirectory":
+          if (
+            typeof input.sourcePath !== "string" ||
+            typeof input.path !== "string" ||
+            typeof input.parentPath !== "string" ||
+            typeof input.basename !== "string"
+          ) {
+            return new Response("Invalid request", { status: 400 })
+          }
+          return Response.json(
+            await ctx.runMutation(internal.fileRest.moveDirectory, {
+              ...owned,
+              sourcePath: input.sourcePath,
               path: input.path,
               parentPath: input.parentPath,
               basename: input.basename,

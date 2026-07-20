@@ -62,6 +62,11 @@ export default defineSchema({
     kind: v.union(v.literal("file"), v.literal("directory")),
     fileId: v.optional(v.id("files")),
     status: fileStatus,
+    /**
+     * Directory created explicitly by the user; kept when empty and only
+     * removed by an explicit delete.
+     */
+    explicit: v.optional(v.boolean()),
   })
     .index("by_owner_path", ["ownerTokenIdentifier", "path"])
     .index("by_owner_fileId", ["ownerTokenIdentifier", "fileId"])

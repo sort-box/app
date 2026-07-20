@@ -288,6 +288,79 @@ export const openApiDocument = {
         },
       },
     },
+    "/api/folders": {
+      post: {
+        tags: ["Files"],
+        operationId: "createFolder",
+        summary: "Create a folder",
+        description:
+          "Creates an empty folder that persists until it is explicitly deleted.",
+        security: [{ clerkSession: [] }],
+        requestBody: jsonBody({
+          type: "object",
+          additionalProperties: false,
+          required: ["path"],
+          properties: {
+            path: { type: "string", example: "/reports/2026" },
+          },
+        }),
+        responses: {
+          "201": dataResponse(
+            { $ref: "#/components/schemas/FileEntry" },
+            "The created folder."
+          ),
+          "409": errorResponse,
+          ...authenticatedErrors,
+        },
+      },
+      patch: {
+        tags: ["Files"],
+        operationId: "moveFolder",
+        summary: "Move a folder",
+        description:
+          "Moves a folder and everything inside it to a new destination path.",
+        security: [{ clerkSession: [] }],
+        requestBody: jsonBody({
+          type: "object",
+          additionalProperties: false,
+          required: ["path", "destinationPath"],
+          properties: {
+            path: { type: "string", example: "/reports/2026" },
+            destinationPath: { type: "string", example: "/archive/2026" },
+          },
+        }),
+        responses: {
+          "200": dataResponse(
+            { $ref: "#/components/schemas/FileEntry" },
+            "The moved folder."
+          ),
+          "404": errorResponse,
+          "409": errorResponse,
+          ...authenticatedErrors,
+        },
+      },
+      delete: {
+        tags: ["Files"],
+        operationId: "deleteFolder",
+        summary: "Delete an empty folder",
+        security: [{ clerkSession: [] }],
+        parameters: [
+          {
+            name: "path",
+            in: "query",
+            required: true,
+            description: "Path of the folder to delete.",
+            schema: { type: "string", minLength: 1, example: "/reports/2026" },
+          },
+        ],
+        responses: {
+          "204": { description: "The folder was deleted." },
+          "404": errorResponse,
+          "409": errorResponse,
+          ...authenticatedErrors,
+        },
+      },
+    },
     "/api/files/cleanup": {
       post: {
         tags: ["Maintenance"],
@@ -494,6 +567,18 @@ export const openApiDocument = {
                     { $ref: "#/components/schemas/InternalUploadReservation" },
                     { $ref: "#/components/schemas/InternalCopyReservation" },
                     { $ref: "#/components/schemas/RateLimitDecision" },
+                    {
+                      allOf: [
+                        { $ref: "#/components/schemas/FileEntry" },
+                        {
+                          type: "object",
+                          required: ["ownerTokenIdentifier"],
+                          properties: {
+                            ownerTokenIdentifier: { type: "string" },
+                          },
+                        },
+                      ],
+                    },
                     { type: "null" },
                   ],
                 },
@@ -729,6 +814,28 @@ export const openApiDocument = {
               trustedOperation(operation, ["fileId"], {
                 fileId: { type: "string" },
               })
+          ),
+          trustedOperation(
+            "createDirectory",
+            ["path", "parentPath", "basename"],
+            {
+              path: { type: "string" },
+              parentPath: { type: "string" },
+              basename: { type: "string" },
+            }
+          ),
+          trustedOperation("deleteDirectory", ["path"], {
+            path: { type: "string" },
+          }),
+          trustedOperation(
+            "moveDirectory",
+            ["sourcePath", "path", "parentPath", "basename"],
+            {
+              sourcePath: { type: "string" },
+              path: { type: "string" },
+              parentPath: { type: "string" },
+              basename: { type: "string" },
+            }
           ),
         ],
         discriminator: { propertyName: "operation" },

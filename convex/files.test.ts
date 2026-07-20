@@ -242,3 +242,281 @@ describe("files authorization", () => {
     )
   })
 })
+
+describe("directories", () => {
+  async function uploadReady(t: ReturnType<typeof convexTest>, path: string) {
+    const segments = path.slice(1).split("/")
+    const created = await t.mutation(internal.fileRest.createUpload, {
+      ...owner,
+      path,
+      parentPath:
+        segments.length === 1 ? "/" : `/${segments.slice(0, -1).join("/")}`,
+      basename: segments.at(-1)!,
+      contentType: "text/plain",
+      size: 1,
+    })
+    await t.mutation(internal.fileRest.completeUpload, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      fileId: created.fileId,
+      verifiedContentType: "text/plain",
+      verifiedSize: 1,
+    })
+    return created.fileId
+  }
+
+  function listDirectory(t: ReturnType<typeof convexTest>, parentPath: string) {
+    return t.query(internal.fileRest.list, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      parentPath,
+      recursive: false,
+      paginationOpts: { cursor: null, numItems: 25 },
+    })
+  }
+
+  it("keeps an explicitly created folder when it becomes empty", async () => {
+    const t = convexTest(schema, modules)
+    await t.mutation(internal.fileRest.createDirectory, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      path: "/projects",
+      parentPath: "/",
+      basename: "projects",
+    })
+    const fileId = await uploadReady(t, "/projects/a.txt")
+    await t.mutation(internal.fileRest.move, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      fileId,
+      path: "/a.txt",
+      parentPath: "/",
+      basename: "a.txt",
+    })
+
+    const root = await listDirectory(t, "/")
+    expect(root.page).toContainEqual(
+      expect.objectContaining({ kind: "directory", path: "/projects" })
+    )
+  })
+
+  it("marks an existing implicit folder explicit instead of conflicting", async () => {
+    const t = convexTest(schema, modules)
+    const fileId = await uploadReady(t, "/docs/a.txt")
+    await t.mutation(internal.fileRest.createDirectory, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      path: "/docs",
+      parentPath: "/",
+      basename: "docs",
+    })
+    await t.mutation(internal.fileRest.move, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      fileId,
+      path: "/a.txt",
+      parentPath: "/",
+      basename: "a.txt",
+    })
+
+    const root = await listDirectory(t, "/")
+    expect(root.page).toContainEqual(
+      expect.objectContaining({ kind: "directory", path: "/docs" })
+    )
+  })
+
+  it("rejects creating a folder over a file or an explicit folder", async () => {
+    const t = convexTest(schema, modules)
+    await uploadReady(t, "/taken.txt")
+    await expect(
+      t.mutation(internal.fileRest.createDirectory, {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+        path: "/taken.txt",
+        parentPath: "/",
+        basename: "taken.txt",
+      })
+    ).rejects.toThrow("PATH_CONFLICT")
+
+    await t.mutation(internal.fileRest.createDirectory, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      path: "/kept",
+      parentPath: "/",
+      basename: "kept",
+    })
+    await expect(
+      t.mutation(internal.fileRest.createDirectory, {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+        path: "/kept",
+        parentPath: "/",
+        basename: "kept",
+      })
+    ).rejects.toThrow("PATH_CONFLICT")
+  })
+
+  it("rejects creating or moving an entry over an existing folder", async () => {
+    const t = convexTest(schema, modules)
+    await uploadReady(t, "/source/a.txt")
+    await t.mutation(internal.fileRest.createDirectory, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      path: "/destination/source",
+      parentPath: "/destination",
+      basename: "source",
+    })
+
+    await expect(
+      t.mutation(internal.fileRest.moveDirectory, {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+        sourcePath: "/source",
+        path: "/destination/source",
+        parentPath: "/destination",
+        basename: "source",
+      })
+    ).rejects.toThrow("PATH_CONFLICT")
+
+    await expect(
+      t.mutation(internal.fileRest.createUpload, {
+        ...owner,
+        path: "/destination/source",
+        parentPath: "/destination",
+        basename: "source",
+        contentType: "text/plain",
+        size: 1,
+      })
+    ).rejects.toThrow("PATH_CONFLICT")
+  })
+
+  it("deletes an empty folder and prunes its implicit ancestors", async () => {
+    const t = convexTest(schema, modules)
+    await t.mutation(internal.fileRest.createDirectory, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      path: "/a/b",
+      parentPath: "/a",
+      basename: "b",
+    })
+    await t.mutation(internal.fileRest.deleteDirectory, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      path: "/a/b",
+    })
+
+    const root = await listDirectory(t, "/")
+    expect(root.page).toEqual([])
+  })
+
+  it("refuses to delete a non-empty folder or another user's folder", async () => {
+    const t = convexTest(schema, modules)
+    await uploadReady(t, "/full/a.txt")
+    await expect(
+      t.mutation(internal.fileRest.deleteDirectory, {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+        path: "/full",
+      })
+    ).rejects.toThrow("DIRECTORY_NOT_EMPTY")
+    await expect(
+      t.mutation(internal.fileRest.deleteDirectory, {
+        ownerTokenIdentifier: "issuer|attacker",
+        path: "/full",
+      })
+    ).rejects.toThrow("FILE_NOT_FOUND")
+  })
+
+  it("moves a folder and re-paths everything inside it", async () => {
+    const t = convexTest(schema, modules)
+    const nested = await uploadReady(t, "/a/b/c.txt")
+    await uploadReady(t, "/a/d.txt")
+
+    const moved = await t.mutation(internal.fileRest.moveDirectory, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      sourcePath: "/a",
+      path: "/x/a",
+      parentPath: "/x",
+      basename: "a",
+    })
+    expect(moved).toMatchObject({ path: "/x/a", parentPath: "/x" })
+
+    const movedRoot = await listDirectory(t, "/x/a")
+    expect(movedRoot.page).toEqual([
+      expect.objectContaining({ kind: "directory", path: "/x/a/b" }),
+      expect.objectContaining({ kind: "file", path: "/x/a/d.txt" }),
+    ])
+    const movedNested = await listDirectory(t, "/x/a/b")
+    expect(movedNested.page).toEqual([
+      expect.objectContaining({ kind: "file", path: "/x/a/b/c.txt" }),
+    ])
+    const file = await t.query(internal.fileRest.getOwned, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      fileId: nested,
+    })
+    expect(file).toMatchObject({ path: "/x/a/b/c.txt", parentPath: "/x/a/b" })
+    const root = await listDirectory(t, "/")
+    expect(root.page).not.toContainEqual(
+      expect.objectContaining({ path: "/a" })
+    )
+  })
+
+  it("rejects invalid folder moves", async () => {
+    const t = convexTest(schema, modules)
+    await uploadReady(t, "/a/b/c.txt")
+
+    await expect(
+      t.mutation(internal.fileRest.moveDirectory, {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+        sourcePath: "/a",
+        path: "/a/b/a",
+        parentPath: "/a/b",
+        basename: "a",
+      })
+    ).rejects.toThrow("INVALID_PATH")
+
+    await uploadReady(t, "/x/a")
+    await expect(
+      t.mutation(internal.fileRest.moveDirectory, {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+        sourcePath: "/a",
+        path: "/x/a",
+        parentPath: "/x",
+        basename: "a",
+      })
+    ).rejects.toThrow("PATH_CONFLICT")
+
+    await expect(
+      t.mutation(internal.fileRest.moveDirectory, {
+        ownerTokenIdentifier: "issuer|attacker",
+        sourcePath: "/a",
+        path: "/moved",
+        parentPath: "/",
+        basename: "moved",
+      })
+    ).rejects.toThrow("FILE_NOT_FOUND")
+
+    await t.mutation(internal.fileRest.createUpload, {
+      ...owner,
+      path: "/a/pending.txt",
+      parentPath: "/a",
+      basename: "pending.txt",
+      contentType: "text/plain",
+      size: 1,
+    })
+    await expect(
+      t.mutation(internal.fileRest.moveDirectory, {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+        sourcePath: "/a",
+        path: "/moved",
+        parentPath: "/",
+        basename: "moved",
+      })
+    ).rejects.toThrow("INVALID_FILE_STATE")
+  })
+
+  it("keeps a moved explicit folder explicit", async () => {
+    const t = convexTest(schema, modules)
+    await t.mutation(internal.fileRest.createDirectory, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      path: "/keep",
+      parentPath: "/",
+      basename: "keep",
+    })
+
+    const moved = await t.mutation(internal.fileRest.moveDirectory, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      sourcePath: "/keep",
+      path: "/archive/keep",
+      parentPath: "/archive",
+      basename: "keep",
+    })
+    expect(moved.explicit).toBe(true)
+  })
+})

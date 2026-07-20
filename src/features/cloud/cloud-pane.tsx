@@ -1,4 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import type { ReactNode } from "react"
+import {
+  DndContext,
+  DragOverlay,
+  MouseSensor,
+  TouchSensor,
+  pointerWithin,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core"
 import {
   useInfiniteQuery,
   useMutation,
@@ -9,28 +23,35 @@ import {
   CornerLeftUpIcon,
   DownloadIcon,
   EllipsisIcon,
+  FilesIcon,
   FolderIcon,
   FolderInputIcon,
+  FolderPlusIcon,
   HomeIcon,
   Loader2Icon,
   PencilIcon,
   PlusIcon,
   Trash2Icon,
+  XIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import {
   FileApiError,
   createDownload,
+  createFolder,
   deleteFile,
+  deleteFolder,
   joinPath,
   listFiles,
   moveFile,
+  moveFolder,
   uploadFile,
   type FileEntry,
 } from "./api"
 import { FileTypeIcon, FolderTypeIcon } from "./file-icon"
 import { collectDroppedFiles, uploadBatch, type DroppedFile } from "./uploads"
+import { cn } from "@/lib/utils"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -40,6 +61,7 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -94,11 +116,56 @@ function useDirectory(path: string) {
   })
 }
 
+export function isValidDropTarget(
+  active: FileEntry,
+  targetPath: string
+): boolean {
+  if (targetPath === active.parentPath) return false
+  if (active.kind === "directory") {
+    return (
+      targetPath !== active.path && !targetPath.startsWith(`${active.path}/`)
+    )
+  }
+  return true
+}
+
+function canDropAll(entries: Array<FileEntry>, targetPath: string): boolean {
+  return (
+    entries.length > 0 &&
+    entries.every((entry) => isValidDropTarget(entry, targetPath))
+  )
+}
+
+type BulkFailure = { entry: FileEntry; error: unknown }
+
+/** Runs one operation per entry and reports per-entry failures instead of rejecting. */
+function settleAll(
+  targets: Array<FileEntry>,
+  run: (entry: FileEntry) => Promise<unknown>
+): Promise<Array<BulkFailure>> {
+  return Promise.all(
+    targets.map((entry) =>
+      run(entry).then(
+        () => null,
+        (error: unknown) => ({ entry, error })
+      )
+    )
+  ).then((results) =>
+    results.filter((result): result is BulkFailure => result !== null)
+  )
+}
+
 export function CloudPane() {
   const [path, setPath] = useState("/")
   const [renameTarget, setRenameTarget] = useState<FileEntry | null>(null)
   const [moveTarget, setMoveTarget] = useState<FileEntry | null>(null)
+  const [newFolderOpen, setNewFolderOpen] = useState(false)
+  const [activeEntries, setActiveEntries] = useState<Array<FileEntry>>([])
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<string>>(
+    () => new Set()
+  )
+  const [hiddenEntryIds, setHiddenEntryIds] = useState<Set<string>>(
     () => new Set()
   )
 
@@ -111,7 +178,13 @@ export function CloudPane() {
   const nextPageRequestPending = useRef(false)
   const entries = sortEntries(
     directory.data?.pages.flatMap((page) => page.page) ?? []
-  ).filter((entry) => !pendingDeleteIds.has(entry._id))
+  ).filter(
+    (entry) =>
+      !pendingDeleteIds.has(entry._id) && !hiddenEntryIds.has(entry._id)
+  )
+  const selectedEntries = entries.filter((entry) => selectedIds.has(entry._id))
+  const allSelected =
+    entries.length > 0 && selectedEntries.length === entries.length
   const segments = path === "/" ? [] : path.slice(1).split("/")
   const retryNextPage = () => {
     void directory.fetchNextPage()
@@ -153,68 +226,174 @@ export function CloudPane() {
 
   useEffect(() => {
     nextPageRequestPending.current = false
+    setSelectedIds(new Set())
     if (scrollContainer.current) scrollContainer.current.scrollTop = 0
   }, [path])
 
   const renameMutation = useMutation({
     mutationFn: ({ entry, name }: { entry: FileEntry; name: string }) =>
-      moveFile(entry.fileId!, joinPath(entry.parentPath, name)),
-    onSuccess: () => {
+      entry.kind === "directory"
+        ? moveFolder(entry.path, joinPath(entry.parentPath, name))
+        : moveFile(entry.fileId!, joinPath(entry.parentPath, name)),
+    onSuccess: (_, { entry }) => {
       invalidate()
       setRenameTarget(null)
-      toast.success("File renamed.")
+      toast.success(
+        entry.kind === "directory" ? "Folder renamed." : "File renamed."
+      )
     },
     onError: (error) => toast.error(errorMessage(error)),
   })
+
+  const unhideEntries = (targets: Array<FileEntry>) =>
+    setHiddenEntryIds((prev) => {
+      const next = new Set(prev)
+      for (const target of targets) next.delete(target._id)
+      return next
+    })
+
+  const deselectEntries = (targets: Array<FileEntry>) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      for (const target of targets) next.delete(target._id)
+      return next
+    })
 
   const moveMutation = useMutation({
     mutationFn: ({
-      entry,
+      entries: targets,
       destination,
     }: {
-      entry: FileEntry
+      entries: Array<FileEntry>
       destination: string
-    }) => moveFile(entry.fileId!, joinPath(destination, entry.basename)),
+    }) =>
+      settleAll(targets, (entry) =>
+        entry.kind === "directory"
+          ? moveFolder(entry.path, joinPath(destination, entry.basename))
+          : moveFile(entry.fileId!, joinPath(destination, entry.basename))
+      ),
+    onSuccess: async (failures, { entries: targets }) => {
+      await invalidate()
+      unhideEntries(targets)
+      deselectEntries(targets)
+      if (failures.length === 0) {
+        setMoveTarget(null)
+        toast.success(
+          targets.length > 1
+            ? `${targets.length} items moved.`
+            : targets[0].kind === "directory"
+              ? "Folder moved."
+              : "File moved."
+        )
+      } else if (targets.length === 1) {
+        toast.error(errorMessage(failures[0].error))
+      } else {
+        toast.error(
+          `${failures.length} of ${targets.length} items could not be moved.`
+        )
+      }
+    },
+  })
+
+  const createFolderMutation = useMutation({
+    mutationFn: (name: string) => createFolder(joinPath(path, name)),
     onSuccess: () => {
       invalidate()
-      setMoveTarget(null)
-      toast.success("File moved.")
+      setNewFolderOpen(false)
+      toast.success("Folder created.")
     },
     onError: (error) => toast.error(errorMessage(error)),
   })
 
-  const restoreEntry = (id: string) =>
+  const deleteFolderMutation = useMutation({
+    mutationFn: (entry: FileEntry) => deleteFolder(entry.path),
+    onSuccess: () => {
+      invalidate()
+      toast.success("Folder deleted.")
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  })
+
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 250, tolerance: 5 },
+    })
+  )
+
+  const handleDragStart = (event: DragStartEvent) => {
+    const entry = event.active.data.current?.entry as FileEntry | undefined
+    if (!entry) return
+    setActiveEntries(selectedIds.has(entry._id) ? selectedEntries : [entry])
+  }
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const targets = activeEntries
+    const targetPath = event.over?.data.current?.path as string | undefined
+    setActiveEntries([])
+    if (targetPath === undefined) return
+    if (!canDropAll(targets, targetPath)) return
+    setHiddenEntryIds((prev) => {
+      const next = new Set(prev)
+      for (const target of targets) next.add(target._id)
+      return next
+    })
+    moveMutation.mutate({ entries: targets, destination: targetPath })
+  }
+
+  const restoreEntries = (targets: Array<FileEntry>) =>
     setPendingDeleteIds((prev) => {
       const next = new Set(prev)
-      next.delete(id)
+      for (const target of targets) next.delete(target._id)
       return next
     })
 
   const deleteMutation = useMutation({
-    mutationFn: (entry: FileEntry) => deleteFile(entry.fileId!),
-    onSuccess: async (_, entry) => {
+    mutationFn: (targets: Array<FileEntry>) =>
+      settleAll(targets, (entry) =>
+        entry.kind === "directory"
+          ? deleteFolder(entry.path)
+          : deleteFile(entry.fileId!)
+      ),
+    onSuccess: async (failures, targets) => {
       await invalidate()
-      restoreEntry(entry._id)
-    },
-    onError: (error, entry) => {
-      toast.error(errorMessage(error))
-      restoreEntry(entry._id)
+      restoreEntries(targets)
+      if (failures.length === 1) {
+        toast.error(errorMessage(failures[0].error))
+      } else if (failures.length > 1) {
+        toast.error(
+          `${failures.length} of ${targets.length} items could not be deleted.`
+        )
+      }
     },
   })
 
-  const scheduleDelete = (entry: FileEntry) => {
-    setPendingDeleteIds((prev) => new Set(prev).add(entry._id))
-    const timeout = window.setTimeout(() => deleteMutation.mutate(entry), 5000)
-    toast(`Deleting “${entry.basename}”…`, {
-      duration: 5000,
-      action: {
-        label: "Cancel",
-        onClick: () => {
-          window.clearTimeout(timeout)
-          restoreEntry(entry._id)
-        },
-      },
+  const scheduleDelete = (targets: Array<FileEntry>) => {
+    if (targets.length === 0) return
+    setPendingDeleteIds((prev) => {
+      const next = new Set(prev)
+      for (const target of targets) next.add(target._id)
+      return next
     })
+    const timeout = window.setTimeout(
+      () => deleteMutation.mutate(targets),
+      5000
+    )
+    toast(
+      targets.length === 1
+        ? `Deleting “${targets[0].basename}”…`
+        : `Deleting ${targets.length} items…`,
+      {
+        duration: 5000,
+        action: {
+          label: "Cancel",
+          onClick: () => {
+            window.clearTimeout(timeout)
+            restoreEntries(targets)
+          },
+        },
+      }
+    )
   }
 
   const fileInput = useRef<HTMLInputElement>(null)
@@ -287,6 +466,30 @@ export function CloudPane() {
     }
   }
 
+  const toggleSelected = (entry: FileEntry, checked: boolean) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(entry._id)
+      else next.delete(entry._id)
+      return next
+    })
+
+  const toggleSelectAll = () =>
+    setSelectedIds(
+      allSelected ? new Set() : new Set(entries.map((entry) => entry._id))
+    )
+
+  const downloadSelected = async () => {
+    for (const entry of selectedEntries) {
+      if (entry.fileId) await download(entry)
+    }
+  }
+
+  const deleteSelected = () => {
+    scheduleDelete(selectedEntries)
+    setSelectedIds(new Set())
+  }
+
   return (
     <div
       className="relative flex h-svh max-h-svh min-h-0 flex-col overflow-hidden"
@@ -348,18 +551,26 @@ export function CloudPane() {
           event.target.value = ""
         }}
       />
-      {segments.length > 0 && (
-        <header className="flex h-12 shrink-0 items-center border-b px-4">
+      <DndContext
+        sensors={sensors}
+        collisionDetection={pointerWithin}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+        onDragCancel={() => setActiveEntries([])}
+      >
+        <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
           <Breadcrumb>
             <BreadcrumbList>
               <BreadcrumbItem>
-                <BreadcrumbLink
-                  render={<button type="button" />}
-                  aria-label="All files"
-                  onClick={() => setPath("/")}
-                >
-                  <HomeIcon strokeWidth={1.5} className="size-4" />
-                </BreadcrumbLink>
+                <BreadcrumbDropTarget path="/" activeEntries={activeEntries}>
+                  <BreadcrumbLink
+                    render={<button type="button" />}
+                    aria-label="All files"
+                    onClick={() => setPath("/")}
+                  >
+                    <HomeIcon strokeWidth={1.5} className="size-4" />
+                  </BreadcrumbLink>
+                </BreadcrumbDropTarget>
               </BreadcrumbItem>
               {segments.map((segment, index) => {
                 const segmentPath = `/${segments.slice(0, index + 1).join("/")}`
@@ -370,185 +581,203 @@ export function CloudPane() {
                     {isLast ? (
                       <BreadcrumbPage>{segment}</BreadcrumbPage>
                     ) : (
-                      <BreadcrumbLink
-                        render={<button type="button" />}
-                        onClick={() => setPath(segmentPath)}
+                      <BreadcrumbDropTarget
+                        path={segmentPath}
+                        activeEntries={activeEntries}
                       >
-                        {segment}
-                      </BreadcrumbLink>
+                        <BreadcrumbLink
+                          render={<button type="button" />}
+                          onClick={() => setPath(segmentPath)}
+                        >
+                          {segment}
+                        </BreadcrumbLink>
+                      </BreadcrumbDropTarget>
                     )}
                   </BreadcrumbItem>
                 )
               })}
             </BreadcrumbList>
           </Breadcrumb>
-        </header>
-      )}
-
-      <div
-        ref={scrollContainer}
-        data-testid="cloud-scroll"
-        className="min-h-0 flex-1 overflow-y-scroll overscroll-contain"
-        onScroll={loadNextPageIfNeeded}
-      >
-        {directory.isError && !directory.data ? (
-          <div className="grid h-full place-items-center">
-            <div className="space-y-3 text-center">
-              <p className="text-sm text-muted-foreground">
-                {errorMessage(directory.error)}
-              </p>
+          {selectedEntries.length > 0 ? (
+            <div className="flex items-center gap-1">
+              <span className="pr-1 text-sm font-medium text-muted-foreground">
+                {selectedEntries.length} selected
+              </span>
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
-                onClick={() => directory.refetch()}
+                disabled={selectedEntries.some(
+                  (entry) => entry.kind === "directory"
+                )}
+                onClick={() => void downloadSelected()}
               >
-                Try again
+                <DownloadIcon />
+                Download
               </Button>
-            </div>
-          </div>
-        ) : !directory.isPending && entries.length === 0 ? (
-          <div className="grid h-full place-items-center">
-            <div className="flex flex-col items-center gap-4 text-center">
-              <FolderIcon
-                strokeWidth={1.5}
-                className="size-8 text-muted-foreground"
-              />
-              <div className="space-y-1">
-                <p className="text-sm font-medium">Nothing here yet</p>
-                <p className="text-sm text-muted-foreground">
-                  Drop files or folders here, or upload one below.
-                </p>
-              </div>
               <Button
-                disabled={uploading}
-                onClick={() => fileInput.current?.click()}
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                onClick={deleteSelected}
               >
-                {uploading ? (
-                  <Loader2Icon className="animate-spin" />
-                ) : (
-                  <PlusIcon />
-                )}
-                Upload your first file
+                <Trash2Icon />
+                Delete
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Clear selection"
+                onClick={() => setSelectedIds(new Set())}
+              >
+                <XIcon />
               </Button>
             </div>
-          </div>
-        ) : (
-          <>
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="pl-4">Name</TableHead>
-                  <TableHead className="w-48">Added</TableHead>
-                  <TableHead className="w-12" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {directory.isPending ? (
-                  <FileRowsSkeleton />
-                ) : (
-                  entries.map((entry) =>
-                    entry.kind === "directory" ? (
-                      <TableRow
-                        key={entry._id}
-                        className="cursor-pointer"
-                        onClick={() => setPath(entry.path)}
-                      >
-                        <TableCell className="pl-4">
-                          <span className="flex items-center gap-2 font-medium">
-                            <FolderTypeIcon className="size-4" />
-                            {entry.basename}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          —
-                        </TableCell>
-                        <TableCell />
-                      </TableRow>
-                    ) : (
-                      <TableRow key={entry._id}>
-                        <TableCell className="pl-4">
-                          <span className="flex items-center gap-2">
-                            <FileTypeIcon
-                              basename={entry.basename}
-                              className="size-4"
-                            />
-                            {entry.basename}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {dateFormat.format(entry._creationTime)}
-                        </TableCell>
-                        <TableCell className="pr-2 text-right">
-                          {entry.fileId && (
-                            <DropdownMenu>
-                              <DropdownMenuTrigger
-                                render={
-                                  <Button
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    aria-label={`Actions for ${entry.basename}`}
-                                  />
-                                }
-                              >
-                                <EllipsisIcon />
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem
-                                  onClick={() => download(entry)}
-                                >
-                                  <DownloadIcon />
-                                  Download
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={() => setRenameTarget(entry)}
-                                >
-                                  <PencilIcon />
-                                  Rename
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={() => setMoveTarget(entry)}
-                                >
-                                  <FolderInputIcon />
-                                  Move to…
-                                </DropdownMenuItem>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  variant="destructive"
-                                  onClick={() => scheduleDelete(entry)}
-                                >
-                                  <Trash2Icon />
-                                  Delete
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    )
-                  )
-                )}
-              </TableBody>
-            </Table>
-            {(directory.hasNextPage || directory.isFetchNextPageError) && (
-              <div className="flex min-h-12 items-center justify-center py-3">
-                {directory.isFetchNextPageError ? (
-                  <Button variant="ghost" size="sm" onClick={retryNextPage}>
-                    Try loading more again
-                  </Button>
-                ) : directory.isFetchingNextPage ? (
-                  <span
-                    role="status"
-                    className="flex items-center gap-2 text-sm text-muted-foreground"
-                  >
-                    <Loader2Icon className="size-4 animate-spin" />
-                    Loading more…
-                  </span>
-                ) : null}
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setNewFolderOpen(true)}
+            >
+              <FolderPlusIcon />
+              New folder
+            </Button>
+          )}
+        </header>
+
+        <div
+          ref={scrollContainer}
+          data-testid="cloud-scroll"
+          className="min-h-0 flex-1 overflow-y-scroll overscroll-contain"
+          onScroll={loadNextPageIfNeeded}
+        >
+          {directory.isError && !directory.data ? (
+            <div className="grid h-full place-items-center">
+              <div className="space-y-3 text-center">
+                <p className="text-sm text-muted-foreground">
+                  {errorMessage(directory.error)}
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => directory.refetch()}
+                >
+                  Try again
+                </Button>
               </div>
-            )}
-          </>
-        )}
-      </div>
+            </div>
+          ) : !directory.isPending && entries.length === 0 ? (
+            <div className="grid h-full place-items-center">
+              <div className="flex flex-col items-center gap-4 text-center">
+                <FolderIcon
+                  strokeWidth={1.5}
+                  className="size-8 text-muted-foreground"
+                />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">Nothing here yet</p>
+                  <p className="text-sm text-muted-foreground">
+                    Drop files or folders here, or upload one below.
+                  </p>
+                </div>
+                <Button
+                  disabled={uploading}
+                  onClick={() => fileInput.current?.click()}
+                >
+                  {uploading ? (
+                    <Loader2Icon className="animate-spin" />
+                  ) : (
+                    <PlusIcon />
+                  )}
+                  Upload your first file
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <Table>
+                <TableHeader>
+                  <TableRow className="group/header hover:bg-transparent">
+                    <TableHead className="w-10 pl-4">
+                      <Checkbox
+                        aria-label="Select all"
+                        checked={allSelected}
+                        onCheckedChange={toggleSelectAll}
+                        className={cn(
+                          "opacity-0 transition-opacity group-hover/header:opacity-100 focus-visible:opacity-100",
+                          allSelected && "opacity-100"
+                        )}
+                      />
+                    </TableHead>
+                    <TableHead>Name</TableHead>
+                    <TableHead className="w-48">Added</TableHead>
+                    <TableHead className="w-12" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {directory.isPending ? (
+                    <FileRowsSkeleton />
+                  ) : (
+                    entries.map((entry) => (
+                      <EntryRow
+                        key={entry._id}
+                        entry={entry}
+                        activeEntries={activeEntries}
+                        selected={selectedIds.has(entry._id)}
+                        onToggleSelect={toggleSelected}
+                        onNavigate={setPath}
+                        onDownload={download}
+                        onRename={setRenameTarget}
+                        onMove={setMoveTarget}
+                        onDelete={(target) => scheduleDelete([target])}
+                        onDeleteFolder={(target) =>
+                          deleteFolderMutation.mutate(target)
+                        }
+                      />
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+              {(directory.hasNextPage || directory.isFetchNextPageError) && (
+                <div className="flex min-h-12 items-center justify-center py-3">
+                  {directory.isFetchNextPageError ? (
+                    <Button variant="ghost" size="sm" onClick={retryNextPage}>
+                      Try loading more again
+                    </Button>
+                  ) : directory.isFetchingNextPage ? (
+                    <span
+                      role="status"
+                      className="flex items-center gap-2 text-sm text-muted-foreground"
+                    >
+                      <Loader2Icon className="size-4 animate-spin" />
+                      Loading more…
+                    </span>
+                  ) : null}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <DragOverlay>
+          {activeEntries.length > 1 ? (
+            <div className="flex w-fit items-center gap-2 rounded-lg border bg-background px-3 py-1.5 text-sm font-medium shadow-md">
+              <FilesIcon className="size-4" />
+              {activeEntries.length} items
+            </div>
+          ) : activeEntries.length === 1 ? (
+            <div className="flex w-fit items-center gap-2 rounded-lg border bg-background px-3 py-1.5 text-sm font-medium shadow-md">
+              {activeEntries[0].kind === "directory" ? (
+                <FolderTypeIcon className="size-4" />
+              ) : (
+                <FileTypeIcon
+                  basename={activeEntries[0].basename}
+                  className="size-4"
+                />
+              )}
+              {activeEntries[0].basename}
+            </div>
+          ) : null}
+        </DragOverlay>
+      </DndContext>
 
       {renameTarget && (
         <RenameDialog
@@ -567,12 +796,222 @@ export function CloudPane() {
           entry={moveTarget}
           pending={moveMutation.isPending}
           onMove={(destination) =>
-            moveMutation.mutate({ entry: moveTarget, destination })
+            moveMutation.mutate({ entries: [moveTarget], destination })
           }
           onClose={() => setMoveTarget(null)}
         />
       )}
+      {newFolderOpen && (
+        <NewFolderDialog
+          pending={createFolderMutation.isPending}
+          onSubmit={(name) => createFolderMutation.mutate(name)}
+          onClose={() => setNewFolderOpen(false)}
+        />
+      )}
     </div>
+  )
+}
+
+function BreadcrumbDropTarget({
+  path,
+  activeEntries,
+  children,
+}: {
+  path: string
+  activeEntries: Array<FileEntry>
+  children: ReactNode
+}) {
+  const { isOver, setNodeRef } = useDroppable({
+    id: `drop:${path}`,
+    data: { path },
+    disabled: !canDropAll(activeEntries, path),
+  })
+  return (
+    <span
+      ref={setNodeRef}
+      className={cn("rounded-md", isOver && "bg-muted ring-1 ring-primary")}
+    >
+      {children}
+    </span>
+  )
+}
+
+function EntryRow({
+  entry,
+  activeEntries,
+  selected,
+  onToggleSelect,
+  onNavigate,
+  onDownload,
+  onRename,
+  onMove,
+  onDelete,
+  onDeleteFolder,
+}: {
+  entry: FileEntry
+  activeEntries: Array<FileEntry>
+  selected: boolean
+  onToggleSelect: (entry: FileEntry, checked: boolean) => void
+  onNavigate: (path: string) => void
+  onDownload: (entry: FileEntry) => void
+  onRename: (entry: FileEntry) => void
+  onMove: (entry: FileEntry) => void
+  onDelete: (entry: FileEntry) => void
+  onDeleteFolder: (entry: FileEntry) => void
+}) {
+  const drag = useDraggable({ id: entry._id, data: { entry } })
+  const drop = useDroppable({
+    id: `drop:${entry.path}`,
+    data: { path: entry.path },
+    disabled:
+      entry.kind !== "directory" || !canDropAll(activeEntries, entry.path),
+  })
+  const dragged =
+    drag.isDragging || activeEntries.some((active) => active._id === entry._id)
+
+  const selectCell = (
+    <TableCell
+      className="w-10 pl-4"
+      onClick={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onTouchStart={(event) => event.stopPropagation()}
+    >
+      <Checkbox
+        aria-label={`Select ${entry.basename}`}
+        checked={selected}
+        onCheckedChange={(checked) => onToggleSelect(entry, checked)}
+        className={cn(
+          "opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100",
+          selected && "opacity-100"
+        )}
+      />
+    </TableCell>
+  )
+
+  if (entry.kind === "directory") {
+    return (
+      <TableRow
+        ref={(node) => {
+          drag.setNodeRef(node)
+          drop.setNodeRef(node)
+        }}
+        className={cn(
+          "group/row cursor-pointer",
+          selected && "bg-accent hover:bg-accent",
+          dragged && "opacity-50",
+          drop.isOver && "bg-muted"
+        )}
+        onClick={() => onNavigate(entry.path)}
+        {...drag.listeners}
+      >
+        {selectCell}
+        <TableCell>
+          <span className="flex items-center gap-2 font-medium">
+            <FolderTypeIcon className="size-4" />
+            {entry.basename}
+          </span>
+        </TableCell>
+        <TableCell className="text-muted-foreground">—</TableCell>
+        <TableCell
+          className="pr-2 text-right"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Actions for ${entry.basename}`}
+                />
+              }
+            >
+              <EllipsisIcon />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => onRename(entry)}>
+                <PencilIcon />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onMove(entry)}>
+                <FolderInputIcon />
+                Move to…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant="destructive"
+                onClick={() => onDeleteFolder(entry)}
+              >
+                <Trash2Icon />
+                Delete folder
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </TableCell>
+      </TableRow>
+    )
+  }
+
+  return (
+    <TableRow
+      ref={drag.setNodeRef}
+      className={cn(
+        "group/row",
+        selected && "bg-accent hover:bg-accent",
+        dragged && "opacity-50"
+      )}
+      {...drag.listeners}
+    >
+      {selectCell}
+      <TableCell>
+        <span className="flex items-center gap-2">
+          <FileTypeIcon basename={entry.basename} className="size-4" />
+          {entry.basename}
+        </span>
+      </TableCell>
+      <TableCell className="text-muted-foreground">
+        {dateFormat.format(entry._creationTime)}
+      </TableCell>
+      <TableCell className="pr-2 text-right">
+        {entry.fileId && (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Actions for ${entry.basename}`}
+                />
+              }
+            >
+              <EllipsisIcon />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => onDownload(entry)}>
+                <DownloadIcon />
+                Download
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onRename(entry)}>
+                <PencilIcon />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onMove(entry)}>
+                <FolderInputIcon />
+                Move to…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant="destructive"
+                onClick={() => onDelete(entry)}
+              >
+                <Trash2Icon />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </TableCell>
+    </TableRow>
   )
 }
 
@@ -583,7 +1022,8 @@ function FileRowsSkeleton() {
     <>
       {skeletonWidths.map((width, index) => (
         <TableRow key={index} className="hover:bg-transparent">
-          <TableCell className="pl-4">
+          <TableCell className="w-10 pl-4" />
+          <TableCell>
             <span className="flex items-center gap-2">
               <Skeleton className="size-4 rounded-md" />
               <Skeleton className={`h-4 ${width}`} />
@@ -614,6 +1054,7 @@ function RenameDialog({
   const trimmed = name.trim()
   const valid =
     trimmed.length > 0 && !trimmed.includes("/") && trimmed !== entry.basename
+  const entryType = entry.kind === "directory" ? "folder" : "file"
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -625,7 +1066,7 @@ function RenameDialog({
           }}
         >
           <DialogHeader>
-            <DialogTitle>Rename file</DialogTitle>
+            <DialogTitle>Rename {entryType}</DialogTitle>
             <DialogDescription>
               Choose a new name for “{entry.basename}”.
             </DialogDescription>
@@ -634,7 +1075,9 @@ function RenameDialog({
             autoFocus
             value={name}
             onChange={(event) => setName(event.target.value)}
-            aria-label="File name"
+            aria-label={
+              entry.kind === "directory" ? "Folder name" : "File name"
+            }
             className="my-4"
           />
           <DialogFooter>
@@ -644,6 +1087,56 @@ function RenameDialog({
             <Button type="submit" disabled={!valid || pending}>
               {pending && <Loader2Icon className="animate-spin" />}
               Rename
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function NewFolderDialog({
+  pending,
+  onSubmit,
+  onClose,
+}: {
+  pending: boolean
+  onSubmit: (name: string) => void
+  onClose: () => void
+}) {
+  const [name, setName] = useState("")
+  const trimmed = name.trim()
+  const valid = trimmed.length > 0 && !trimmed.includes("/")
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (valid && !pending) onSubmit(trimmed)
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>New folder</DialogTitle>
+            <DialogDescription>
+              Create a folder in the current directory.
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            autoFocus
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            aria-label="Folder name"
+            className="my-4"
+          />
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!valid || pending}>
+              {pending && <Loader2Icon className="animate-spin" />}
+              Create
             </Button>
           </DialogFooter>
         </form>
@@ -737,7 +1230,7 @@ function MoveDialog({
           </Button>
           <Button
             type="button"
-            disabled={pending || destination === entry.parentPath}
+            disabled={pending || !isValidDropTarget(entry, destination)}
             onClick={() => onMove(destination)}
           >
             {pending && <Loader2Icon className="animate-spin" />}

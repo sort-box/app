@@ -129,6 +129,31 @@ export function deleteFile(fileId: string): Promise<null> {
   return request(`/api/files/${fileId}`, { method: "DELETE" })
 }
 
+export function createFolder(path: string): Promise<FileEntry> {
+  return request("/api/folders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  })
+}
+
+export function moveFolder(
+  path: string,
+  destinationPath: string
+): Promise<FileEntry> {
+  return request("/api/folders", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, destinationPath }),
+  })
+}
+
+export function deleteFolder(path: string): Promise<null> {
+  return request(`/api/folders?${new URLSearchParams({ path })}`, {
+    method: "DELETE",
+  })
+}
+
 export function createDownload(fileId: string): Promise<{ url: string }> {
   return request(`/api/files/${fileId}/download`)
 }
