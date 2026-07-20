@@ -1,27 +1,35 @@
+import { useState, type ReactNode } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
   SignInButton,
   SignUpButton,
-  UserButton,
+  useClerk,
+  useUser,
 } from "@clerk/tanstack-react-start"
+import { Authenticated, AuthLoading, Unauthenticated } from "convex/react"
 import {
-  Authenticated,
-  AuthLoading,
-  Unauthenticated,
-  useQuery,
-} from "convex/react"
-import { ArrowRightIcon, CheckCircle2Icon } from "lucide-react"
+  ArrowRightIcon,
+  FolderIcon,
+  LogOutIcon,
+  SearchIcon,
+  SquarePenIcon,
+} from "lucide-react"
 
-import { api } from "../../convex/_generated/api"
-import { AppSidebar } from "@/components/app-sidebar"
-import { ChartAreaInteractive } from "@/components/chart-area-interactive"
-import { DataTable } from "@/components/data-table"
-import { SectionCards } from "@/components/section-cards"
-import { SiteHeader } from "@/components/site-header"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable"
+import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
-import data from "@/app/dashboard/data.json"
 
 export const Route = createFileRoute("/")({ component: App })
 
@@ -78,53 +86,123 @@ function Welcome() {
   )
 }
 
-function Dashboard() {
-  const status = useQuery(api.status.current)
+const sections = [
+  { id: "chat", label: "New Chat", icon: SquarePenIcon },
+  { id: "cloud", label: "Cloud", icon: FolderIcon },
+] as const
+
+type SectionId = (typeof sections)[number]["id"]
+
+function Shell({ account }: { account: ReactNode }) {
+  const [activeSection, setActiveSection] = useState<SectionId>("chat")
+  const active = sections.find((section) => section.id === activeSection)
 
   return (
-    <SidebarProvider
-      style={
-        {
-          "--sidebar-width": "calc(var(--spacing) * 72)",
-          "--header-height": "calc(var(--spacing) * 12)",
-        } as React.CSSProperties
-      }
-    >
-      <AppSidebar variant="inset" />
-      <SidebarInset>
-        <div className="flex items-center justify-between border-b pr-4">
-          <SiteHeader />
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <CheckCircle2Icon className="size-3.5 text-emerald-600" />
-            {status?.authenticated ? "Convex authenticated" : "Connecting"}
-            <UserButton />
-          </div>
-        </div>
-        <div className="flex flex-1 flex-col">
-          <div className="@container/main flex flex-1 flex-col gap-2">
-            <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-              <SectionCards />
-              <div className="px-4 lg:px-6">
-                <ChartAreaInteractive />
-              </div>
-              <DataTable data={data} />
+    <div className="h-svh">
+      <ResizablePanelGroup orientation="horizontal">
+        <ResizablePanel
+          defaultSize="240px"
+          minSize="180px"
+          maxSize="400px"
+          className="bg-sidebar text-sidebar-foreground shadow-[inset_-8px_0_16px_-4px_rgba(0,0,0,0.1)]"
+        >
+          <div className="flex h-full flex-col">
+            <div className="flex items-center justify-between p-2 pl-4">
+              <span className="font-['Geist_Variable'] text-xl font-semibold tracking-tight">
+                Untie
+              </span>
+              <Button variant="ghost" size="icon">
+                <SearchIcon strokeWidth={1.5} />
+              </Button>
+            </div>
+            <nav className="flex flex-col gap-1 p-2">
+              {sections.map(({ id, label, icon: Icon }) => (
+                <Button
+                  key={id}
+                  variant="ghost"
+                  data-active={activeSection === id}
+                  onClick={() => setActiveSection(id)}
+                  className="justify-start font-normal data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground"
+                >
+                  <Icon
+                    strokeWidth={1.5}
+                    className="text-sidebar-foreground/70"
+                  />
+                  {label}
+                </Button>
+              ))}
+            </nav>
+            <div className="mt-auto">
+              <Separator />
+              <div className="p-2">{account}</div>
             </div>
           </div>
-        </div>
-      </SidebarInset>
-    </SidebarProvider>
+        </ResizablePanel>
+        <ResizableHandle withHandle />
+        <ResizablePanel>
+          <main className="grid h-full place-items-center text-sm text-muted-foreground">
+            {active?.label}
+          </main>
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    </div>
+  )
+}
+
+function AccountSkeleton() {
+  return (
+    <div className="flex h-8 items-center gap-1.5 px-3">
+      <Skeleton className="size-5 rounded-full" />
+      <Skeleton className="h-4 w-24" />
+    </div>
+  )
+}
+
+function Dashboard() {
+  const { user, isLoaded } = useUser()
+  const { signOut } = useClerk()
+  const username =
+    user?.username ??
+    user?.fullName ??
+    user?.primaryEmailAddress?.emailAddress ??
+    "Account"
+
+  if (!isLoaded) {
+    return <Shell account={<AccountSkeleton />} />
+  }
+
+  return (
+    <Shell
+      account={
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                variant="ghost"
+                className="w-full justify-start aria-expanded:bg-sidebar-accent"
+              />
+            }
+          >
+            <Avatar className="size-5">
+              <AvatarImage src={user?.imageUrl} alt={username} />
+              <AvatarFallback>
+                <Skeleton className="size-full rounded-full" />
+              </AvatarFallback>
+            </Avatar>
+            <span className="truncate">{username}</span>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent side="top" align="start" sideOffset={4}>
+            <DropdownMenuItem onClick={() => signOut()}>
+              <LogOutIcon />
+              Disconnect
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      }
+    />
   )
 }
 
 function LoadingScreen() {
-  return (
-    <main className="grid min-h-svh place-items-center px-6">
-      <div className="w-full max-w-xl space-y-5">
-        <Skeleton className="size-11 rounded-lg" />
-        <Skeleton className="h-10 w-4/5" />
-        <Skeleton className="h-5 w-3/5" />
-        <Skeleton className="h-11 w-48" />
-      </div>
-    </main>
-  )
+  return <Shell account={<AccountSkeleton />} />
 }
