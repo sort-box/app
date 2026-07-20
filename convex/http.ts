@@ -63,6 +63,68 @@ function transitionError(error: unknown): Response {
   return Response.json({ code: "TRANSITION_REJECTED" }, { status: 409 })
 }
 
+function aiUsageError(error: unknown): Response {
+  const message = error instanceof Error ? error.message : ""
+  if (message.includes("AI_USAGE_LIMIT_EXCEEDED")) {
+    return Response.json({ code: "AI_USAGE_LIMIT_EXCEEDED" }, { status: 429 })
+  }
+  if (message.includes("AI_ENTITLEMENT_NOT_CONFIGURED")) {
+    return Response.json(
+      { code: "AI_ENTITLEMENT_NOT_CONFIGURED" },
+      { status: 409 }
+    )
+  }
+  if (message.includes("INVALID_AI_USAGE")) {
+    return Response.json({ code: "INVALID_INPUT" }, { status: 400 })
+  }
+  return Response.json({ code: "USAGE_TRACKING_FAILED" }, { status: 503 })
+}
+
+http.route({
+  path: "/internal/ai/usage",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!(await serviceAuthorized(request))) {
+      return new Response("Unauthorized", { status: 401 })
+    }
+    const identity = await ctx.auth.getUserIdentity()
+    if (!identity) return new Response("Unauthorized", { status: 401 })
+    const input = (await request.json().catch(() => null)) as Record<
+      string,
+      unknown
+    > | null
+    if (
+      !input ||
+      (input.operation !== "check" && input.operation !== "record")
+    ) {
+      return new Response("Invalid request", { status: 400 })
+    }
+    const ownerTokenIdentifier = identity.tokenIdentifier
+    try {
+      if (input.operation === "check") {
+        await ctx.runMutation(internal.aiUsage.checkAllowance, {
+          ownerTokenIdentifier,
+        })
+        return Response.json(null)
+      }
+      if (
+        typeof input.inputTokens !== "number" ||
+        typeof input.outputTokens !== "number"
+      ) {
+        return new Response("Invalid request", { status: 400 })
+      }
+      await ctx.runMutation(internal.aiUsage.record, {
+        ownerTokenIdentifier,
+        inputTokens: input.inputTokens,
+        outputTokens: input.outputTokens,
+      })
+      return Response.json(null)
+    } catch (error) {
+      return aiUsageError(error)
+    }
+  }),
+})
+
 http.route({
   path: "/internal/files/transition",
   method: "POST",

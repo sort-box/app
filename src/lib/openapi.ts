@@ -445,6 +445,44 @@ export const openApiDocument = {
         },
       },
     },
+    "/internal/ai/usage": {
+      post: {
+        tags: ["Maintenance"],
+        operationId: "manageAiUsage",
+        summary: "Check or record authenticated AI token usage",
+        description:
+          "Trusted application-server boundary that derives the user from the bearer token, checks their AI entitlement, or records provider-reported token usage.",
+        servers: [
+          {
+            url: "https://{deployment}.convex.site",
+            description: "Convex site deployment",
+            variables: {
+              deployment: {
+                default: "your-deployment",
+                description: "Convex deployment name.",
+              },
+            },
+          },
+        ],
+        security: [{ fileServiceSecret: [], bearerAuth: [] }],
+        requestBody: jsonBody({
+          $ref: "#/components/schemas/TrustedAiUsageOperation",
+        }),
+        responses: {
+          "200": {
+            description: "The usage operation completed.",
+            content: {
+              "application/json": { schema: { type: "null" } },
+            },
+          },
+          "400": errorResponse,
+          "401": errorResponse,
+          "409": errorResponse,
+          "429": errorResponse,
+          "503": errorResponse,
+        },
+      },
+    },
     "/internal/files/transition": {
       post: {
         tags: ["Maintenance"],
@@ -760,6 +798,16 @@ export const openApiDocument = {
           retryable: { type: "boolean" },
           retryAfter: { type: "integer", minimum: 1 },
         },
+      },
+      TrustedAiUsageOperation: {
+        oneOf: [
+          trustedOperation("check", [], {}),
+          trustedOperation("record", ["inputTokens", "outputTokens"], {
+            inputTokens: { type: "integer", minimum: 0 },
+            outputTokens: { type: "integer", minimum: 0 },
+          }),
+        ],
+        discriminator: { propertyName: "operation" },
       },
       TrustedFileOperation: {
         oneOf: [

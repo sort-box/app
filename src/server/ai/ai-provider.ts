@@ -53,6 +53,8 @@ export type AiProviderError =
   | { code: "INVALID_INPUT"; message: string }
   | { code: "CONFIGURATION_ERROR"; message: string }
   | { code: "AUTHENTICATION_FAILED"; message: string }
+  | { code: "USAGE_LIMIT_EXCEEDED"; message: string }
+  | { code: "USAGE_TRACKING_UNAVAILABLE"; message: string; retryable: true }
   | { code: "RATE_LIMITED"; message: string; retryable: true }
   | { code: "UNAVAILABLE"; message: string; retryable: true }
   | { code: "INVALID_RESPONSE"; message: string }
