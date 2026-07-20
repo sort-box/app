@@ -19,6 +19,7 @@ import type * as fileTransitions from "../fileTransitions.js";
 import type * as http from "../http.js";
 import type * as migrations from "../migrations.js";
 import type * as status from "../status.js";
+import type * as userUsage from "../userUsage.js";
 
 import type {
   ApiFromModules,
@@ -38,6 +39,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   migrations: typeof migrations;
   status: typeof status;
+  userUsage: typeof userUsage;
 }>;
 
 /**

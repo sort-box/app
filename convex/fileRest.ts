@@ -16,8 +16,8 @@ import {
   shouldRestartEmbedding,
 } from "./documentEmbedding"
 import { embeddingErrorCode, embeddingStatus, fileStatus } from "./schema"
+import { getOrCreateFileEntitlement, getOrCreateFileUsage } from "./userUsage"
 
-const TEN_GIB = 10 * 1024 ** 3
 const WINDOW_MS = 60_000
 const MAX_FILE_SIZE = Math.floor(4.995 * 1024 ** 3)
 
@@ -81,19 +81,7 @@ async function owned(
 }
 
 async function usage(ctx: MutationCtx, ownerTokenIdentifier: string) {
-  const current = await ctx.db
-    .query("fileUsage")
-    .withIndex("by_owner", (q) =>
-      q.eq("ownerTokenIdentifier", ownerTokenIdentifier)
-    )
-    .unique()
-  if (current) return current
-  const id = await ctx.db.insert("fileUsage", {
-    ownerTokenIdentifier,
-    reservedBytes: 0,
-    usedBytes: 0,
-  })
-  return (await ctx.db.get(id))!
+  return await getOrCreateFileUsage(ctx, ownerTokenIdentifier)
 }
 
 async function assertPathAvailable(
@@ -284,11 +272,17 @@ async function pruneDirectories(
 async function reserveBytes(
   ctx: MutationCtx,
   ownerTokenIdentifier: string,
-  bytes: number,
-  quota: number
+  bytes: number
 ) {
   const current = await usage(ctx, ownerTokenIdentifier)
-  if (current.usedBytes + current.reservedBytes + bytes > quota) {
+  const entitlement = await getOrCreateFileEntitlement(
+    ctx,
+    ownerTokenIdentifier
+  )
+  if (
+    current.usedBytes + current.reservedBytes + bytes >
+    entitlement.storageLimitBytes
+  ) {
     throw new ConvexError("QUOTA_EXCEEDED")
   }
   await ctx.db.patch(current._id, {
@@ -367,7 +361,7 @@ export const createUpload = internalMutation({
     await supersedePendingUpload(ctx, args.ownerTokenIdentifier, args.path)
     await assertPathAvailable(ctx, args.ownerTokenIdentifier, args.path)
     await ensureDirectories(ctx, args.ownerTokenIdentifier, args.parentPath)
-    await reserveBytes(ctx, args.ownerTokenIdentifier, args.size, TEN_GIB)
+    await reserveBytes(ctx, args.ownerTokenIdentifier, args.size)
     const objectKey = `files/${crypto.randomUUID()}`
     const fileId = await ctx.db.insert("files", {
       ownerClerkUserId: args.ownerClerkUserId,
@@ -562,12 +556,7 @@ export const reserveCopy = internalMutation({
     }
     await assertPathAvailable(ctx, args.ownerTokenIdentifier, args.path)
     await ensureDirectories(ctx, args.ownerTokenIdentifier, args.parentPath)
-    await reserveBytes(
-      ctx,
-      args.ownerTokenIdentifier,
-      source.verifiedSize,
-      TEN_GIB
-    )
+    await reserveBytes(ctx, args.ownerTokenIdentifier, source.verifiedSize)
     const destinationObjectKey = `files/${crypto.randomUUID()}`
     const fileId = await ctx.db.insert("files", {
       ownerClerkUserId: args.ownerClerkUserId,

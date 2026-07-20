@@ -74,6 +74,56 @@ export default defineSchema({
     reservedBytes: v.number(),
     usedBytes: v.number(),
   }).index("by_owner", ["ownerTokenIdentifier"]),
+  userUsage: defineTable(
+    v.union(
+      v.object({
+        ownerTokenIdentifier: v.string(),
+        kind: v.literal("ai"),
+        inputTokens: v.number(),
+        outputTokens: v.number(),
+      }),
+      v.object({
+        ownerTokenIdentifier: v.string(),
+        kind: v.literal("embedding"),
+        tokens: v.number(),
+      }),
+      v.object({
+        ownerTokenIdentifier: v.string(),
+        kind: v.literal("file"),
+        reservedBytes: v.number(),
+        usedBytes: v.number(),
+      }),
+      v.object({
+        ownerTokenIdentifier: v.string(),
+        kind: v.literal("reranking"),
+        documents: v.number(),
+      })
+    )
+  ).index("by_owner_and_kind", ["ownerTokenIdentifier", "kind"]),
+  userEntitlements: defineTable(
+    v.union(
+      v.object({
+        ownerTokenIdentifier: v.string(),
+        kind: v.literal("ai"),
+        tokenLimit: v.number(),
+      }),
+      v.object({
+        ownerTokenIdentifier: v.string(),
+        kind: v.literal("embedding"),
+        tokenLimit: v.number(),
+      }),
+      v.object({
+        ownerTokenIdentifier: v.string(),
+        kind: v.literal("file"),
+        storageLimitBytes: v.number(),
+      }),
+      v.object({
+        ownerTokenIdentifier: v.string(),
+        kind: v.literal("reranking"),
+        documentLimit: v.number(),
+      })
+    )
+  ).index("by_owner_and_kind", ["ownerTokenIdentifier", "kind"]),
   fileRateLimits: defineTable({
     ownerTokenIdentifier: v.string(),
     bucket: v.string(),

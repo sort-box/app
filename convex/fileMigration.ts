@@ -2,6 +2,7 @@ import { v } from "convex/values"
 
 import { internal } from "./_generated/api"
 import { internalMutation } from "./_generated/server"
+import { getOrCreateFileUsage } from "./userUsage"
 
 const BATCH_SIZE = 50
 
@@ -52,29 +53,19 @@ export const backfillFiles = internalMutation({
         })
       }
       if (!file.usageBackfilledAt) {
-        const current = await ctx.db
-          .query("fileUsage")
-          .withIndex("by_owner", (q) =>
-            q.eq("ownerTokenIdentifier", file.ownerTokenIdentifier)
-          )
-          .unique()
+        const current = await getOrCreateFileUsage(
+          ctx,
+          file.ownerTokenIdentifier
+        )
         const reserved = file.status === "pending" ? file.declaredSize : 0
         const used =
           file.status === "ready" || file.status === "deleting"
             ? (file.verifiedSize ?? file.declaredSize)
             : 0
-        if (current) {
-          await ctx.db.patch(current._id, {
-            reservedBytes: current.reservedBytes + reserved,
-            usedBytes: current.usedBytes + used,
-          })
-        } else {
-          await ctx.db.insert("fileUsage", {
-            ownerTokenIdentifier: file.ownerTokenIdentifier,
-            reservedBytes: reserved,
-            usedBytes: used,
-          })
-        }
+        await ctx.db.patch(current._id, {
+          reservedBytes: current.reservedBytes + reserved,
+          usedBytes: current.usedBytes + used,
+        })
         await ctx.db.patch(file._id, { usageBackfilledAt: Date.now() })
       }
       const entry = await ctx.db

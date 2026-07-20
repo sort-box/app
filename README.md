@@ -70,6 +70,14 @@ bunx convex run fileMigration:backfillFiles
 
 The migration processes resumable batches and can safely be invoked again.
 
+After deploying the unified usage and entitlement tables, migrate the legacy
+file usage ledger with a dry run followed by the live migration:
+
+```bash
+bunx convex run migrations:backfillUnifiedFileUsage '{"dryRun":true}'
+bunx convex run migrations:backfillUnifiedFileUsage
+```
+
 ## Checks
 
 ```bash
