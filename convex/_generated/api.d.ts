@@ -8,7 +8,9 @@
  * @module
  */
 
+import type * as fileTransitions from "../fileTransitions.js";
 import type * as files from "../files.js";
+import type * as http from "../http.js";
 import type * as status from "../status.js";
 
 import type {
@@ -18,7 +20,9 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  fileTransitions: typeof fileTransitions;
   files: typeof files;
+  http: typeof http;
   status: typeof status;
 }>;
 

@@ -260,11 +260,17 @@ export class R2ObjectStorage implements ObjectStorage, ObjectStorageSigner {
         if (!result.Body) throw new TypeError("R2 returned no object body.")
 
         const resolvedRange = result.ContentRange?.match(
-          /^bytes (\d+)-(\d+)\/\d+$/
+          /^bytes (\d+)-(\d+)\/(\d+)$/
         )
+        const fullSize = resolvedRange
+          ? Number(resolvedRange[3])
+          : result.ContentLength
         return {
           body: toWebStream(result.Body),
-          object: objectInfo(input.key, result),
+          object: objectInfo(input.key, {
+            ...result,
+            ContentLength: fullSize,
+          }),
           contentLength: result.ContentLength ?? 0,
           range: resolvedRange
             ? {

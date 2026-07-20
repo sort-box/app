@@ -1,10 +1,17 @@
 import { auth } from "@clerk/tanstack-react-start/server"
 import { createServerFn } from "@tanstack/react-start"
 import { ConvexHttpClient } from "convex/browser"
+import { ResultAsync } from "neverthrow"
 import { z } from "zod"
 
 import { api } from "../../convex/_generated/api"
-import type { Id } from "../../convex/_generated/dataModel"
+import type { Doc, Id } from "../../convex/_generated/dataModel"
+import {
+  FileWorkflowService,
+  type FileMetadataPort,
+  type FileRecord,
+  type FileWorkflowError,
+} from "@/server/files/file-workflow.server"
 import { getObjectStorage } from "@/server/storage/storage.server"
 
 const MAX_SINGLE_PART_SIZE = 5 * 1024 ** 3 - 5 * 1024 ** 2
@@ -49,7 +56,7 @@ function failure(
 }
 
 async function authenticatedConvexClient(): Promise<
-  ApiResult<ConvexHttpClient>
+  ApiResult<ConvexHttpClient & { authToken: string }>
 > {
   const { userId, getToken } = await auth()
   if (!userId) {
@@ -67,7 +74,32 @@ async function authenticatedConvexClient(): Promise<
 
   const client = new ConvexHttpClient(convexUrl)
   client.setAuth(token)
-  return { ok: true, value: client }
+  return { ok: true, value: Object.assign(client, { authToken: token }) }
+}
+
+async function transition<T>(
+  client: ConvexHttpClient & { authToken: string },
+  input: Record<string, unknown>
+): Promise<T> {
+  const siteUrl = process.env.VITE_CONVEX_SITE_URL
+  const serviceSecret = process.env.FILE_SERVICE_SECRET
+  if (!siteUrl || !serviceSecret || serviceSecret.length < 32) {
+    throw new Error("File transition service is not configured")
+  }
+  const response = await fetch(
+    `${siteUrl.replace(/\/$/, "")}/internal/files/transition`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${client.authToken}`,
+        "Content-Type": "application/json",
+        "x-file-service-secret": serviceSecret,
+      },
+      body: JSON.stringify(input),
+    }
+  )
+  if (!response.ok) throw new Error("File transition rejected")
+  return (await response.json()) as T
 }
 
 function storageFailure(error: { code: string; retryable?: boolean }): {
@@ -101,6 +133,87 @@ function convexFailure(error: unknown): { ok: false; error: FileApiError } {
   return failure("INTERNAL_ERROR", "The file operation failed.")
 }
 
+function toFileRecord(file: Doc<"files">): FileRecord {
+  return {
+    id: file._id,
+    objectKey: file.objectKey,
+    originalName: file.originalName,
+    declaredContentType: file.declaredContentType,
+    declaredSize: file.declaredSize,
+    verifiedSize: file.verifiedSize,
+    status: file.status,
+  }
+}
+
+function metadataPort(
+  client: ConvexHttpClient & { authToken: string }
+): FileMetadataPort {
+  const metadataError = (): FileWorkflowError => ({ code: "METADATA_ERROR" })
+  return {
+    getOwned: (fileId) =>
+      ResultAsync.fromPromise(
+        client
+          .query(api.files.getOwned, { fileId: fileId as Id<"files"> })
+          .then((file) => (file ? toFileRecord(file) : null)),
+        metadataError
+      ),
+    markReady: (fileId, object) =>
+      ResultAsync.fromPromise(
+        transition<Doc<"files">>(client, {
+          operation: "markReady",
+          fileId,
+          verifiedContentType: object.contentType,
+          verifiedSize: object.size,
+          etag: object.etag,
+        }).then(toFileRecord),
+        metadataError
+      ),
+    markFailed: (fileId, failureCode) =>
+      ResultAsync.fromPromise(
+        transition<void>(client, {
+          operation: "markFailed",
+          fileId,
+          failureCode,
+        }),
+        metadataError
+      ),
+    beginDelete: (fileId) =>
+      ResultAsync.fromPromise(
+        transition<Doc<"files">>(client, {
+          operation: "beginDelete",
+          fileId,
+        }).then(toFileRecord),
+        metadataError
+      ),
+    completeDelete: (fileId) =>
+      ResultAsync.fromPromise(
+        transition<void>(client, { operation: "completeDelete", fileId }),
+        metadataError
+      ),
+  }
+}
+
+function workflowFailure(error: FileWorkflowError) {
+  switch (error.code) {
+    case "FILE_NOT_FOUND":
+      return failure("FILE_NOT_FOUND", "The file was not found.")
+    case "INVALID_FILE_STATE":
+      return failure(
+        "INVALID_FILE_STATE",
+        "The file is not in the required state."
+      )
+    case "UPLOAD_MISMATCH":
+      return failure(
+        "UPLOAD_MISMATCH",
+        "The uploaded file does not match its declaration."
+      )
+    case "STORAGE_ERROR":
+      return storageFailure(error.error)
+    case "METADATA_ERROR":
+      return failure("INTERNAL_ERROR", "The file operation failed.")
+  }
+}
+
 export const createFileUpload = createServerFn({ method: "POST" })
   .validator(createUploadSchema)
   .handler(async ({ data }) => {
@@ -112,11 +225,9 @@ export const createFileUpload = createServerFn({ method: "POST" })
       return failure("CONFIGURATION_ERROR", storageResult.error.message)
     }
 
-    const objectKey = `files/${crypto.randomUUID()}`
-    let fileId: Id<"files">
+    let reservation: { fileId: Id<"files">; objectKey: string }
     try {
-      fileId = await clientResult.value.mutation(api.files.createPending, {
-        objectKey,
+      reservation = await clientResult.value.mutation(api.files.createPending, {
         originalName: data.originalName,
         declaredContentType: data.contentType,
         declaredSize: data.size,
@@ -126,14 +237,15 @@ export const createFileUpload = createServerFn({ method: "POST" })
     }
 
     const signed = await storageResult.value.signPut({
-      key: objectKey,
+      key: reservation.objectKey,
       contentType: data.contentType,
       expiresInSeconds: UPLOAD_EXPIRY_SECONDS,
     })
     if (signed.isErr()) {
       try {
-        await clientResult.value.mutation(api.files.markFailed, {
-          fileId,
+        await transition(clientResult.value, {
+          operation: "markFailed",
+          fileId: reservation.fileId,
           failureCode: "SIGNING_FAILED",
         })
       } catch {
@@ -145,7 +257,7 @@ export const createFileUpload = createServerFn({ method: "POST" })
     return {
       ok: true,
       value: {
-        fileId,
+        fileId: reservation.fileId,
         uploadUrl: signed.value.url,
         method: "PUT" as const,
         requiredHeaders: signed.value.requiredHeaders,
@@ -161,59 +273,18 @@ export const completeFileUpload = createServerFn({ method: "POST" })
     if (!clientResult.ok) return clientResult
     const fileId = data.fileId as Id<"files">
 
-    let file: Awaited<
-      ReturnType<typeof clientResult.value.query<typeof api.files.getOwned>>
-    >
-    try {
-      file = await clientResult.value.query(api.files.getOwned, { fileId })
-    } catch (error) {
-      return convexFailure(error)
-    }
-    if (!file) return failure("FILE_NOT_FOUND", "The file was not found.")
-    if (file.status === "ready") return { ok: true, value: file }
-    if (file.status !== "pending" && file.status !== "failed") {
-      return failure(
-        "INVALID_FILE_STATE",
-        "The file is not awaiting upload completion."
-      )
-    }
-
     const storageResult = getObjectStorage()
     if (storageResult.isErr()) {
       return failure("CONFIGURATION_ERROR", storageResult.error.message)
     }
-    const observed = await storageResult.value.headObject(file.objectKey)
-    if (observed.isErr()) return storageFailure(observed.error)
-
-    if (
-      observed.value.size !== file.declaredSize ||
-      observed.value.contentType !== file.declaredContentType
-    ) {
-      try {
-        await clientResult.value.mutation(api.files.markFailed, {
-          fileId,
-          failureCode: "UPLOAD_MISMATCH",
-        })
-      } catch {
-        // Preserve the primary mismatch response.
-      }
-      return failure(
-        "UPLOAD_MISMATCH",
-        "The uploaded file does not match its declaration."
-      )
-    }
-
-    try {
-      const ready = await clientResult.value.mutation(api.files.markReady, {
-        fileId,
-        verifiedContentType: observed.value.contentType,
-        verifiedSize: observed.value.size,
-        etag: observed.value.etag,
-      })
-      return { ok: true, value: ready }
-    } catch (error) {
-      return convexFailure(error)
-    }
+    const result = await new FileWorkflowService(
+      metadataPort(clientResult.value),
+      storageResult.value
+    ).completeUpload(fileId)
+    return result.match(
+      (file) => ({ ok: true as const, value: file }),
+      workflowFailure
+    )
   })
 
 export const getFileDownload = createServerFn({ method: "POST" })
@@ -256,29 +327,18 @@ export const deleteFile = createServerFn({ method: "POST" })
     if (!clientResult.ok) return clientResult
     const fileId = data.fileId as Id<"files">
 
-    try {
-      const file = await clientResult.value.mutation(api.files.beginDelete, {
-        fileId,
-      })
-      const storageResult = getObjectStorage()
-      if (storageResult.isErr()) {
-        return failure("CONFIGURATION_ERROR", storageResult.error.message)
-      }
-      const deleted = await storageResult.value.deleteObject({
-        key: file.objectKey,
-      })
-      if (deleted.isErr()) {
-        await clientResult.value.mutation(api.files.markFailed, {
-          fileId,
-          failureCode: "DELETE_FAILED",
-        })
-        return storageFailure(deleted.error)
-      }
-      await clientResult.value.mutation(api.files.completeDelete, { fileId })
-      return { ok: true, value: null }
-    } catch (error) {
-      return convexFailure(error)
+    const storageResult = getObjectStorage()
+    if (storageResult.isErr()) {
+      return failure("CONFIGURATION_ERROR", storageResult.error.message)
     }
+    const result = await new FileWorkflowService(
+      metadataPort(clientResult.value),
+      storageResult.value
+    ).deleteFile(fileId)
+    return result.match(
+      () => ({ ok: true as const, value: null }),
+      workflowFailure
+    )
   })
 
 export const listMyFiles = createServerFn({ method: "GET" })
@@ -332,7 +392,8 @@ export const cleanupMyIncompleteUploads = createServerFn({ method: "POST" })
           key: file.objectKey,
         })
         if (deleted.isErr()) continue
-        await clientResult.value.mutation(api.files.discardIncomplete, {
+        await transition(clientResult.value, {
+          operation: "discardIncomplete",
           fileId: file._id,
         })
         cleaned += 1

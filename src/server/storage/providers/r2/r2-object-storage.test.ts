@@ -1,6 +1,9 @@
 import {
+  CopyObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   type S3Client,
 } from "@aws-sdk/client-s3"
@@ -90,6 +93,7 @@ describe("R2ObjectStorage", () => {
     if (result.isOk()) {
       expect(result.value.range).toEqual({ start: 2, endInclusive: 5 })
       expect(result.value.contentLength).toBe(4)
+      expect(result.value.object.size).toBe(10)
       expect(result.value.body).toBe(responseStream)
     }
   })
@@ -108,6 +112,77 @@ describe("R2ObjectStorage", () => {
     expect(result.isOk()).toBe(true)
     expect(send).toHaveBeenCalledTimes(2)
     if (result.isOk()) expect(result.value.deleted).toEqual(keys)
+  })
+
+  it("normalizes listings and continuation cursors", async () => {
+    const send = vi.fn(async (command: unknown) => {
+      expect(command).toBeInstanceOf(ListObjectsV2Command)
+      expect((command as ListObjectsV2Command).input).toMatchObject({
+        Prefix: "files/",
+        ContinuationToken: "cursor-one",
+        MaxKeys: 25,
+      })
+      return {
+        Contents: [
+          {
+            Key: "files/one",
+            Size: 12,
+            ETag: '"etag-list"',
+          },
+        ],
+        CommonPrefixes: [{ Prefix: "files/archive/" }],
+        NextContinuationToken: "cursor-two",
+      }
+    })
+    const storage = storageWith(send)
+
+    const result = await storage.listObjects({
+      prefix: "files/",
+      cursor: "cursor-one",
+      limit: 25,
+    })
+
+    expect(result.isOk()).toBe(true)
+    if (result.isOk()) {
+      expect(result.value.objects[0]).toMatchObject({
+        key: "files/one",
+        size: 12,
+        etag: "etag-list",
+      })
+      expect(result.value.prefixes).toEqual(["files/archive/"])
+      expect(result.value.nextCursor).toBe("cursor-two")
+    }
+  })
+
+  it("heads the destination after copy to return complete metadata", async () => {
+    const send = vi.fn(async (command: unknown) => {
+      if (command instanceof CopyObjectCommand) return {}
+      expect(command).toBeInstanceOf(HeadObjectCommand)
+      return {
+        ContentLength: 42,
+        ContentType: "text/plain",
+        ETag: '"copied-etag"',
+        Metadata: { category: "test" },
+      }
+    })
+    const storage = storageWith(send)
+
+    const result = await storage.copyObject({
+      sourceKey: "files/source",
+      destinationKey: "files/destination",
+    })
+
+    expect(result.isOk()).toBe(true)
+    expect(send).toHaveBeenCalledTimes(2)
+    if (result.isOk()) {
+      expect(result.value).toMatchObject({
+        key: "files/destination",
+        size: 42,
+        contentType: "text/plain",
+        etag: "copied-etag",
+        metadata: { category: "test" },
+      })
+    }
   })
 
   it("does not expose provider error details", async () => {
