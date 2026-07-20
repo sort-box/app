@@ -57,6 +57,7 @@ describe("public file metadata", () => {
       etag: "etag",
       status: "ready",
       completedAt: 20,
+      embeddingStatus: "not_indexed",
       path: "/report.pdf",
       parentPath: "/",
       basename: "report.pdf",
@@ -75,6 +76,7 @@ describe("public file metadata", () => {
       etag: "etag",
       status: "ready",
       completedAt: 20,
+      embedding: { status: "not_indexed" },
     })
     expect(result).not.toHaveProperty("objectKey")
     expect(result).not.toHaveProperty("ownerTokenIdentifier")

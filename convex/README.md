@@ -88,3 +88,50 @@ function handleButtonPress() {
 Use the Convex CLI to push your functions to a deployment. See everything
 the Convex CLI can do by running `npx convex -h` in your project root
 directory. To learn more, launch the docs with `npx convex docs`.
+
+## Document embedding rollout
+
+The file embedding fields are intentionally optional for the first deployment
+so existing rows remain valid while the backfill runs. Configure the four
+`CLOUDFLARE_*` R2 values and `VOYAGE_API_KEY` from `.env.example.convex`, then
+deploy the widened schema and ingestion functions. Convex reads embedding
+source objects directly from R2; no application callback or public tunnel is
+required.
+
+Preview the first bounded migration batch without committing changes:
+
+```sh
+bunx convex run migrations:backfillFileEmbeddings '{"dryRun":true}'
+```
+
+Start or resume the real idempotent backfill:
+
+```sh
+bunx convex run migrations:backfillFileEmbeddings
+```
+
+Verify that no file is missing an embedding lifecycle state:
+
+```sh
+bunx convex run documentEmbedding:verifyEmbeddingBackfill
+```
+
+Only after verification reports `complete: true` should a follow-up deployment
+make `embeddingStatus` required and remove the temporary `not_indexed` fallback.
+The initial backfill does not require a cron job.
+
+## Document embedding operational notes
+
+- The 100 MB source limit matches the largest object the ingestion contract
+  accepts. Extraction buffers the source in a Node action, so documents near
+  that ceiling can still fail with `EMBEDDING_FAILED` if they exceed Convex's
+  memory or 10-minute action limits; operators should retry or reduce the file.
+- A manual retry restarts `queued`, `extracting`, and `embedding` work as well
+  as failed work, providing recovery when a workpool job is lost.
+- Directory listings perform a bounded file lookup for each entry in the page
+  to attach embedding state. Keep page sizes bounded if that state remains in
+  the listing response.
+- Moving or renaming a file does not re-embed it, so its internal RAG title can
+  retain the previous basename. The title is not currently user-visible.
+- Copying a file creates a per-file RAG entry and re-embeds identical content;
+  indexing cost therefore grows linearly with copies.

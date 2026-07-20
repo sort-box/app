@@ -22,6 +22,7 @@ import { Route as ApiFilesUploadsRouteImport } from './routes/api.files.uploads'
 import { Route as ApiFilesFileIdCompleteRouteImport } from './routes/api.files.$fileId.complete'
 import { Route as ApiFilesFileIdCopiesRouteImport } from './routes/api.files.$fileId.copies'
 import { Route as ApiFilesFileIdDownloadRouteImport } from './routes/api.files.$fileId.download'
+import { Route as ApiFilesFileIdEmbeddingsRetryRouteImport } from './routes/api.files.$fileId.embeddings.retry'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -88,6 +89,12 @@ const ApiFilesFileIdDownloadRoute = ApiFilesFileIdDownloadRouteImport.update({
   path: '/download',
   getParentRoute: () => ApiFilesFileIdRoute,
 } as any)
+const ApiFilesFileIdEmbeddingsRetryRoute =
+  ApiFilesFileIdEmbeddingsRetryRouteImport.update({
+    id: '/embeddings/retry',
+    path: '/embeddings/retry',
+    getParentRoute: () => ApiFilesFileIdRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -103,6 +110,7 @@ export interface FileRoutesByFullPath {
   '/api/files/$fileId/complete': typeof ApiFilesFileIdCompleteRoute
   '/api/files/$fileId/copies': typeof ApiFilesFileIdCopiesRoute
   '/api/files/$fileId/download': typeof ApiFilesFileIdDownloadRoute
+  '/api/files/$fileId/embeddings/retry': typeof ApiFilesFileIdEmbeddingsRetryRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -118,6 +126,7 @@ export interface FileRoutesByTo {
   '/api/files/$fileId/complete': typeof ApiFilesFileIdCompleteRoute
   '/api/files/$fileId/copies': typeof ApiFilesFileIdCopiesRoute
   '/api/files/$fileId/download': typeof ApiFilesFileIdDownloadRoute
+  '/api/files/$fileId/embeddings/retry': typeof ApiFilesFileIdEmbeddingsRetryRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -134,6 +143,7 @@ export interface FileRoutesById {
   '/api/files/$fileId/complete': typeof ApiFilesFileIdCompleteRoute
   '/api/files/$fileId/copies': typeof ApiFilesFileIdCopiesRoute
   '/api/files/$fileId/download': typeof ApiFilesFileIdDownloadRoute
+  '/api/files/$fileId/embeddings/retry': typeof ApiFilesFileIdEmbeddingsRetryRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -151,6 +161,7 @@ export interface FileRouteTypes {
     | '/api/files/$fileId/complete'
     | '/api/files/$fileId/copies'
     | '/api/files/$fileId/download'
+    | '/api/files/$fileId/embeddings/retry'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -166,6 +177,7 @@ export interface FileRouteTypes {
     | '/api/files/$fileId/complete'
     | '/api/files/$fileId/copies'
     | '/api/files/$fileId/download'
+    | '/api/files/$fileId/embeddings/retry'
   id:
     | '__root__'
     | '/'
@@ -181,6 +193,7 @@ export interface FileRouteTypes {
     | '/api/files/$fileId/complete'
     | '/api/files/$fileId/copies'
     | '/api/files/$fileId/download'
+    | '/api/files/$fileId/embeddings/retry'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -283,6 +296,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFilesFileIdDownloadRouteImport
       parentRoute: typeof ApiFilesFileIdRoute
     }
+    '/api/files/$fileId/embeddings/retry': {
+      id: '/api/files/$fileId/embeddings/retry'
+      path: '/embeddings/retry'
+      fullPath: '/api/files/$fileId/embeddings/retry'
+      preLoaderRoute: typeof ApiFilesFileIdEmbeddingsRetryRouteImport
+      parentRoute: typeof ApiFilesFileIdRoute
+    }
   }
 }
 
@@ -290,12 +310,14 @@ interface ApiFilesFileIdRouteChildren {
   ApiFilesFileIdCompleteRoute: typeof ApiFilesFileIdCompleteRoute
   ApiFilesFileIdCopiesRoute: typeof ApiFilesFileIdCopiesRoute
   ApiFilesFileIdDownloadRoute: typeof ApiFilesFileIdDownloadRoute
+  ApiFilesFileIdEmbeddingsRetryRoute: typeof ApiFilesFileIdEmbeddingsRetryRoute
 }
 
 const ApiFilesFileIdRouteChildren: ApiFilesFileIdRouteChildren = {
   ApiFilesFileIdCompleteRoute: ApiFilesFileIdCompleteRoute,
   ApiFilesFileIdCopiesRoute: ApiFilesFileIdCopiesRoute,
   ApiFilesFileIdDownloadRoute: ApiFilesFileIdDownloadRoute,
+  ApiFilesFileIdEmbeddingsRetryRoute: ApiFilesFileIdEmbeddingsRetryRoute,
 }
 
 const ApiFilesFileIdRouteWithChildren = ApiFilesFileIdRoute._addFileChildren(

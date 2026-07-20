@@ -7,7 +7,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function adapterWith(fetchImplementation: typeof fetch) {
-  return new VoyageSearchAdapter("test-api-key", fetchImplementation)
+  return new VoyageSearchAdapter("test-api-key", fetchImplementation, 2)
 }
 
 function requestBody(fetchMock: ReturnType<typeof vi.fn>) {
@@ -16,6 +16,19 @@ function requestBody(fetchMock: ReturnType<typeof vi.fn>) {
 }
 
 describe("VoyageSearchAdapter embeddings", () => {
+  it("requests and validates the pipeline's 1,024 dimensions by default", async () => {
+    const embedding = Array.from({ length: 1_024 }, () => 0.01)
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ data: [{ index: 0, embedding }] })
+    )
+    const adapter = new VoyageSearchAdapter("test-api-key", fetchMock)
+
+    const result = await adapter.embedDocuments(["passage"])
+
+    expect(result.isOk() && result.value[0]).toHaveLength(1_024)
+    expect(requestBody(fetchMock)).toMatchObject({ output_dimension: 1_024 })
+  })
+
   it("embeds documents with the retrieval document input type", async () => {
     const fetchMock = vi.fn(async () =>
       jsonResponse({
@@ -50,6 +63,7 @@ describe("VoyageSearchAdapter embeddings", () => {
       input: ["first", "second"],
       model: "voyage-4-large",
       input_type: "document",
+      output_dimension: 2,
     })
   })
 
@@ -69,6 +83,7 @@ describe("VoyageSearchAdapter embeddings", () => {
       input: ["find this"],
       model: "voyage-4-large",
       input_type: "query",
+      output_dimension: 2,
     })
   })
 

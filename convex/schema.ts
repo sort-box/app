@@ -8,6 +8,26 @@ export const fileStatus = v.union(
   v.literal("failed")
 )
 
+export const embeddingStatus = v.union(
+  v.literal("not_indexed"),
+  v.literal("queued"),
+  v.literal("extracting"),
+  v.literal("embedding"),
+  v.literal("ready"),
+  v.literal("failed"),
+  v.literal("unsupported")
+)
+
+export const embeddingErrorCode = v.union(
+  v.literal("UNSUPPORTED_TYPE"),
+  v.literal("OCR_REQUIRED"),
+  v.literal("TOO_LARGE"),
+  v.literal("NO_TEXT"),
+  v.literal("ENCRYPTED"),
+  v.literal("EXTRACTION_FAILED"),
+  v.literal("EMBEDDING_FAILED")
+)
+
 export default defineSchema({
   files: defineTable({
     ownerClerkUserId: v.string(),
@@ -29,6 +49,12 @@ export default defineSchema({
     basename: v.optional(v.string()),
     operation: v.optional(v.union(v.literal("upload"), v.literal("copy"))),
     usageBackfilledAt: v.optional(v.number()),
+    /** Optional during the widen/backfill phase of the embedding rollout. */
+    embeddingStatus: v.optional(embeddingStatus),
+    embeddingEntryId: v.optional(v.string()),
+    embeddingVersion: v.optional(v.string()),
+    embeddingErrorCode: v.optional(embeddingErrorCode),
+    embeddingUpdatedAt: v.optional(v.number()),
   })
     .index("by_ownerTokenIdentifier_and_status", [
       "ownerTokenIdentifier",

@@ -10,7 +10,12 @@ import {
   internalQuery,
   type MutationCtx,
 } from "./_generated/server"
-import { fileStatus } from "./schema"
+import {
+  deleteFileEmbedding,
+  queueFileEmbedding,
+  shouldRestartEmbedding,
+} from "./documentEmbedding"
+import { embeddingErrorCode, embeddingStatus, fileStatus } from "./schema"
 
 const TEN_GIB = 10 * 1024 ** 3
 const WINDOW_MS = 60_000
@@ -37,6 +42,11 @@ const fileValidator = v.object({
   basename: v.optional(v.string()),
   operation: v.optional(v.union(v.literal("upload"), v.literal("copy"))),
   usageBackfilledAt: v.optional(v.number()),
+  embeddingStatus: v.optional(embeddingStatus),
+  embeddingEntryId: v.optional(v.string()),
+  embeddingVersion: v.optional(v.string()),
+  embeddingErrorCode: v.optional(embeddingErrorCode),
+  embeddingUpdatedAt: v.optional(v.number()),
 })
 const entryValidator = v.object({
   _id: v.id("fileEntries"),
@@ -49,6 +59,13 @@ const entryValidator = v.object({
   fileId: v.optional(v.id("files")),
   status: fileStatus,
   explicit: v.optional(v.boolean()),
+})
+const listedEntryValidator = v.object({
+  ...entryValidator.fields,
+  embeddingStatus: v.optional(embeddingStatus),
+  embeddingVersion: v.optional(v.string()),
+  embeddingErrorCode: v.optional(embeddingErrorCode),
+  embeddingUpdatedAt: v.optional(v.number()),
 })
 
 async function owned(
@@ -364,6 +381,7 @@ export const createUpload = internalMutation({
       basename: args.basename,
       operation: "upload",
       usageBackfilledAt: Date.now(),
+      embeddingStatus: "not_indexed",
       status: "pending",
     })
     await ctx.db.insert("fileEntries", {
@@ -397,32 +415,53 @@ export const list = internalQuery({
     recursive: v.boolean(),
     paginationOpts: paginationOptsValidator,
   },
-  returns: paginationResultValidator(entryValidator),
+  returns: paginationResultValidator(listedEntryValidator),
   handler: async (ctx, args) => {
-    if (!args.recursive) {
-      return await ctx.db
-        .query("fileEntries")
-        .withIndex("by_owner_parent_status_path", (q) =>
-          q
-            .eq("ownerTokenIdentifier", args.ownerTokenIdentifier)
-            .eq("parentPath", args.parentPath)
-            .eq("status", "ready")
-        )
-        .paginate(args.paginationOpts)
+    const result = !args.recursive
+      ? await ctx.db
+          .query("fileEntries")
+          .withIndex("by_owner_parent_status_path", (q) =>
+            q
+              .eq("ownerTokenIdentifier", args.ownerTokenIdentifier)
+              .eq("parentPath", args.parentPath)
+              .eq("status", "ready")
+          )
+          .paginate(args.paginationOpts)
+      : await (() => {
+          const prefix = args.parentPath === "/" ? "/" : `${args.parentPath}/`
+          return ctx.db
+            .query("fileEntries")
+            .withIndex("by_owner_path", (q) =>
+              q
+                .eq("ownerTokenIdentifier", args.ownerTokenIdentifier)
+                .gte("path", prefix)
+                .lt("path", `${prefix}\uffff`)
+            )
+            .filter((q) =>
+              q.and(
+                q.eq(q.field("status"), "ready"),
+                q.eq(q.field("kind"), "file")
+              )
+            )
+            .paginate(args.paginationOpts)
+        })()
+    return {
+      ...result,
+      page: await Promise.all(
+        result.page.map(async (entry) => {
+          if (!entry.fileId) return entry
+          const file = await ctx.db.get("files", entry.fileId)
+          if (!file) return entry
+          return {
+            ...entry,
+            embeddingStatus: file.embeddingStatus ?? "not_indexed",
+            embeddingVersion: file.embeddingVersion,
+            embeddingErrorCode: file.embeddingErrorCode,
+            embeddingUpdatedAt: file.embeddingUpdatedAt,
+          }
+        })
+      ),
     }
-    const prefix = args.parentPath === "/" ? "/" : `${args.parentPath}/`
-    return await ctx.db
-      .query("fileEntries")
-      .withIndex("by_owner_path", (q) =>
-        q
-          .eq("ownerTokenIdentifier", args.ownerTokenIdentifier)
-          .gte("path", prefix)
-          .lt("path", `${prefix}\uffff`)
-      )
-      .filter((q) =>
-        q.and(q.eq(q.field("status"), "ready"), q.eq(q.field("kind"), "file"))
-      )
-      .paginate(args.paginationOpts)
   },
 })
 
@@ -463,6 +502,7 @@ export const completeUpload = internalMutation({
     })
     const entry = await fileEntry(ctx, args.ownerTokenIdentifier, file._id)
     if (entry) await ctx.db.patch(entry._id, { status: "ready" })
+    await queueFileEmbedding(ctx, (await ctx.db.get(file._id))!)
     return (await ctx.db.get(file._id))!
   },
 })
@@ -542,6 +582,7 @@ export const reserveCopy = internalMutation({
       basename: args.basename,
       operation: "copy",
       usageBackfilledAt: Date.now(),
+      embeddingStatus: "not_indexed",
       status: "pending",
     })
     await ctx.db.insert("fileEntries", {
@@ -592,6 +633,22 @@ export const completeCopy = internalMutation({
     })
     const entry = await fileEntry(ctx, args.ownerTokenIdentifier, file._id)
     if (entry) await ctx.db.patch(entry._id, { status: "ready" })
+    // Copies have independent file keys and therefore independent RAG entries;
+    // identical source content is intentionally embedded once per copy.
+    await queueFileEmbedding(ctx, (await ctx.db.get(file._id))!)
+    return (await ctx.db.get(file._id))!
+  },
+})
+
+export const retryEmbedding = internalMutation({
+  args: { ownerTokenIdentifier: v.string(), fileId: v.id("files") },
+  returns: fileValidator,
+  handler: async (ctx, args) => {
+    const file = await owned(ctx, args.fileId, args.ownerTokenIdentifier)
+    if (shouldRestartEmbedding(file)) {
+      await deleteFileEmbedding(ctx, file.embeddingEntryId)
+      await queueFileEmbedding(ctx, file)
+    }
     return (await ctx.db.get(file._id))!
   },
 })
@@ -811,6 +868,7 @@ export const completeDelete = internalMutation({
     await ctx.db.patch(current._id, {
       usedBytes: Math.max(0, current.usedBytes - (file.verifiedSize ?? 0)),
     })
+    await deleteFileEmbedding(ctx, file.embeddingEntryId)
     await ctx.db.delete(file._id)
     const entry = await fileEntry(ctx, args.ownerTokenIdentifier, file._id)
     if (entry) {

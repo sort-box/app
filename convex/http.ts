@@ -268,6 +268,16 @@ http.route({
               failureCode: input.failureCode,
             })
           )
+        case "retryEmbedding":
+          if (typeof input.fileId !== "string") {
+            return new Response("Invalid request", { status: 400 })
+          }
+          return Response.json(
+            await ctx.runMutation(internal.fileRest.retryEmbedding, {
+              ...owned,
+              fileId: input.fileId as never,
+            })
+          )
         case "reserveCopy":
           if (
             typeof input.sourceFileId !== "string" ||
