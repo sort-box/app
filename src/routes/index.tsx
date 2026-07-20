@@ -12,6 +12,7 @@ import {
   FolderIcon,
   LogOutIcon,
   SearchIcon,
+  SettingsIcon,
   SquarePenIcon,
 } from "lucide-react"
 
@@ -21,6 +22,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
@@ -160,7 +162,7 @@ function AccountSkeleton() {
 
 function Dashboard() {
   const { user, isLoaded } = useUser()
-  const { signOut } = useClerk()
+  const { signOut, openUserProfile } = useClerk()
   const username =
     user?.username ??
     user?.fullName ??
@@ -192,6 +194,11 @@ function Dashboard() {
             <span className="truncate">{username}</span>
           </DropdownMenuTrigger>
           <DropdownMenuContent side="top" align="start" sideOffset={4}>
+            <DropdownMenuItem onClick={() => openUserProfile()}>
+              <SettingsIcon />
+              Settings
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => signOut()}>
               <LogOutIcon />
               Disconnect
