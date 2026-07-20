@@ -293,6 +293,46 @@ function storageFailure(): Failure {
   )
 }
 
+export type PublicFile = {
+  id: string
+  createdAt: number
+  path: string
+  parentPath: string
+  basename: string
+  contentType: string
+  size: number
+  etag?: string
+  status: "ready"
+  completedAt: number
+}
+
+export type PublicFileEntry = {
+  _id: string
+  _creationTime: number
+  path: string
+  parentPath: string
+  basename: string
+  kind: "file" | "directory"
+  fileId?: string
+  status: "ready"
+}
+
+export function toPublicFile(file: Doc<"files">): PublicFile {
+  if (file.status !== "ready") throw new Error("File is not ready")
+  return {
+    id: file._id,
+    createdAt: file._creationTime,
+    path: file.path ?? `/${file.originalName}`,
+    parentPath: file.parentPath ?? "/",
+    basename: file.basename ?? file.originalName,
+    contentType: file.verifiedContentType ?? file.declaredContentType,
+    size: file.verifiedSize ?? file.declaredSize,
+    etag: file.etag,
+    status: "ready",
+    completedAt: file.completedAt ?? file._creationTime,
+  }
+}
+
 export class FileRestService {
   constructor(private readonly context: FileApiContext) {}
 
@@ -392,13 +432,15 @@ export class FileRestService {
     }
   }
 
-  async complete(fileId: string): Promise<FileApiResult<unknown>> {
+  async complete(fileId: string): Promise<FileApiResult<PublicFile>> {
     const file = await this.privileged<Doc<"files"> | null>("getOwned", {
       fileId: fileId as Id<"files">,
     })
     if (!file.ok) return file
     if (!file.value) return error("FILE_NOT_FOUND", "The file was not found.")
-    if (file.value.status === "ready") return { ok: true, value: file.value }
+    if (file.value.status === "ready") {
+      return { ok: true, value: toPublicFile(file.value) }
+    }
     if (file.value.status !== "pending" || file.value.operation !== "upload") {
       return error("INVALID_FILE_STATE", "The file is not pending upload.")
     }
@@ -418,12 +460,15 @@ export class FileRestService {
       })
       return error("INVALID_INPUT", "The uploaded object does not match.")
     }
-    return this.privileged("completeUpload", {
+    const completed = await this.privileged<Doc<"files">>("completeUpload", {
       fileId: file.value._id,
       verifiedContentType: object.value.contentType!,
       verifiedSize: object.value.size,
       etag: object.value.etag,
     })
+    return completed.ok
+      ? { ok: true, value: toPublicFile(completed.value) }
+      : completed
   }
 
   async download(fileId: string): Promise<FileApiResult<unknown>> {
@@ -454,24 +499,53 @@ export class FileRestService {
   }): Promise<FileApiResult<unknown>> {
     const path = parseDirectoryPath(input.path)
     if (!path.ok) return path
-    return this.privileged("list", {
+    const result = await this.privileged<{
+      page: Array<Doc<"fileEntries">>
+      isDone: boolean
+      continueCursor: string
+    }>("list", {
       parentPath: path.value,
       recursive: input.recursive,
       cursor: input.cursor,
       limit: input.limit,
     })
+    if (!result.ok) return result
+    return {
+      ok: true,
+      value: {
+        page: result.value.page.map((entry): PublicFileEntry => ({
+          _id: entry._id,
+          _creationTime: entry._creationTime,
+          path: entry.path,
+          parentPath: entry.parentPath,
+          basename: entry.basename,
+          kind: entry.kind,
+          fileId: entry.fileId,
+          status: "ready",
+        })),
+        isDone: result.value.isDone,
+        continueCursor: result.value.continueCursor,
+      },
+    }
   }
 
-  async move(fileId: string, destination: string) {
+  async move(
+    fileId: string,
+    destination: string
+  ): Promise<FileApiResult<PublicFile>> {
     const path = parseFilePath(destination)
     if (!path.ok) return path
-    return this.privileged("move", {
+    const moved = await this.privileged<Doc<"files">>("move", {
       fileId: fileId as Id<"files">,
       ...path.value,
     })
+    return moved.ok ? { ok: true, value: toPublicFile(moved.value) } : moved
   }
 
-  async copy(fileId: string, destination: string) {
+  async copy(
+    fileId: string,
+    destination: string
+  ): Promise<FileApiResult<PublicFile>> {
     const path = parseFilePath(destination)
     if (!path.ok) return path
     const reserved = await this.privileged<{
@@ -497,13 +571,16 @@ export class FileRestService {
       })
       return storageFailure()
     }
-    return this.privileged("completeCopy", {
+    const completed = await this.privileged<Doc<"files">>("completeCopy", {
       fileId: reserved.value.fileId,
       verifiedContentType:
         copied.value.contentType ?? "application/octet-stream",
       verifiedSize: copied.value.size,
       etag: copied.value.etag,
     })
+    return completed.ok
+      ? { ok: true, value: toPublicFile(completed.value) }
+      : completed
   }
 
   async delete(fileId: string): Promise<FileApiResult<null>> {

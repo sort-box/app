@@ -39,6 +39,20 @@ const jsonBody = (schema: Record<string, unknown>) => ({
   },
 })
 
+const trustedOperation = (
+  operation: string,
+  required: string[],
+  properties: Record<string, unknown>
+) => ({
+  type: "object",
+  additionalProperties: false,
+  required: ["operation", ...required],
+  properties: {
+    operation: { type: "string", const: operation },
+    ...properties,
+  },
+})
+
 const dataResponse = (
   schema: Record<string, unknown>,
   description: string
@@ -410,7 +424,7 @@ export const openApiDocument = {
               "application/json": {
                 schema: {
                   oneOf: [
-                    { $ref: "#/components/schemas/File" },
+                    { $ref: "#/components/schemas/InternalFile" },
                     { type: "null" },
                   ],
                 },
@@ -466,34 +480,24 @@ export const openApiDocument = {
         ],
         security: [{ fileServiceSecret: [], bearerAuth: [] }],
         requestBody: jsonBody({
-          type: "object",
-          required: ["operation"],
-          properties: {
-            operation: {
-              type: "string",
-              enum: [
-                "getOwned",
-                "list",
-                "consumeRateLimit",
-                "createUpload",
-                "completeUpload",
-                "failPending",
-                "reserveCopy",
-                "completeCopy",
-                "move",
-                "beginDelete",
-                "completeDelete",
-                "cancelDelete",
-              ],
-            },
-          },
-          additionalProperties: true,
+          $ref: "#/components/schemas/TrustedFileOperation",
         }),
         responses: {
           "200": {
             description: "The trusted operation completed.",
             content: {
-              "application/json": { schema: {} },
+              "application/json": {
+                schema: {
+                  oneOf: [
+                    { $ref: "#/components/schemas/InternalFile" },
+                    { $ref: "#/components/schemas/InternalFilePage" },
+                    { $ref: "#/components/schemas/InternalUploadReservation" },
+                    { $ref: "#/components/schemas/InternalCopyReservation" },
+                    { $ref: "#/components/schemas/RateLimitDecision" },
+                    { type: "null" },
+                  ],
+                },
+              },
             },
           },
           "400": errorResponse,
@@ -652,13 +656,92 @@ export const openApiDocument = {
           retryAfter: { type: "integer", minimum: 1 },
         },
       },
-      File: {
+      TrustedFileOperation: {
+        oneOf: [
+          trustedOperation("getOwned", ["fileId"], {
+            fileId: { type: "string" },
+          }),
+          trustedOperation(
+            "list",
+            ["parentPath", "recursive", "cursor", "limit"],
+            {
+              parentPath: { type: "string" },
+              recursive: { type: "boolean" },
+              cursor: { type: ["string", "null"] },
+              limit: { type: "integer", minimum: 1, maximum: 100 },
+            }
+          ),
+          trustedOperation("consumeRateLimit", ["bucket"], {
+            bucket: {
+              type: "string",
+              enum: ["read", "mutation", "upload"],
+            },
+          }),
+          trustedOperation(
+            "createUpload",
+            ["path", "parentPath", "basename", "contentType", "size"],
+            {
+              path: { type: "string" },
+              parentPath: { type: "string" },
+              basename: { type: "string" },
+              contentType: { type: "string" },
+              size: { type: "integer", minimum: 0, maximum: 5363340410 },
+            }
+          ),
+          ...["completeUpload", "completeCopy"].map((operation) =>
+            trustedOperation(
+              operation,
+              ["fileId", "verifiedContentType", "verifiedSize"],
+              {
+                fileId: { type: "string" },
+                verifiedContentType: { type: "string" },
+                verifiedSize: { type: "integer", minimum: 0 },
+                etag: { type: "string" },
+              }
+            )
+          ),
+          trustedOperation("failPending", ["fileId", "failureCode"], {
+            fileId: { type: "string" },
+            failureCode: { type: "string" },
+          }),
+          trustedOperation(
+            "reserveCopy",
+            ["sourceFileId", "path", "parentPath", "basename"],
+            {
+              sourceFileId: { type: "string" },
+              path: { type: "string" },
+              parentPath: { type: "string" },
+              basename: { type: "string" },
+            }
+          ),
+          trustedOperation(
+            "move",
+            ["fileId", "path", "parentPath", "basename"],
+            {
+              fileId: { type: "string" },
+              path: { type: "string" },
+              parentPath: { type: "string" },
+              basename: { type: "string" },
+            }
+          ),
+          ...["beginDelete", "completeDelete", "cancelDelete"].map(
+            (operation) =>
+              trustedOperation(operation, ["fileId"], {
+                fileId: { type: "string" },
+              })
+          ),
+        ],
+        discriminator: { propertyName: "operation" },
+      },
+      InternalFile: {
         type: "object",
         description:
-          "A file record. Lifecycle-specific fields may be absent until the upload is complete.",
+          "Trusted service record. This schema is never returned by the public file API.",
         required: [
           "_id",
           "_creationTime",
+          "ownerClerkUserId",
+          "ownerTokenIdentifier",
           "objectKey",
           "originalName",
           "declaredContentType",
@@ -668,6 +751,8 @@ export const openApiDocument = {
         properties: {
           _id: { type: "string" },
           _creationTime: { type: "number" },
+          ownerClerkUserId: { type: "string" },
+          ownerTokenIdentifier: { type: "string" },
           objectKey: { type: "string" },
           originalName: { type: "string" },
           declaredContentType: { type: "string" },
@@ -686,6 +771,91 @@ export const openApiDocument = {
           parentPath: { type: "string" },
           basename: { type: "string" },
           operation: { type: "string", enum: ["upload", "copy"] },
+          usageBackfilledAt: { type: "number" },
+        },
+      },
+      InternalFilePage: {
+        type: "object",
+        required: ["page", "isDone", "continueCursor"],
+        properties: {
+          page: {
+            type: "array",
+            items: {
+              allOf: [
+                { $ref: "#/components/schemas/FileEntry" },
+                {
+                  type: "object",
+                  required: ["ownerTokenIdentifier"],
+                  properties: {
+                    ownerTokenIdentifier: { type: "string" },
+                  },
+                },
+              ],
+            },
+          },
+          isDone: { type: "boolean" },
+          continueCursor: { type: "string" },
+          splitCursor: { type: ["string", "null"] },
+          pageStatus: {
+            type: ["string", "null"],
+            enum: ["SplitRecommended", "SplitRequired", null],
+          },
+        },
+      },
+      InternalUploadReservation: {
+        type: "object",
+        additionalProperties: false,
+        required: ["fileId", "objectKey"],
+        properties: {
+          fileId: { type: "string" },
+          objectKey: { type: "string" },
+        },
+      },
+      InternalCopyReservation: {
+        type: "object",
+        additionalProperties: false,
+        required: ["fileId", "sourceObjectKey", "destinationObjectKey"],
+        properties: {
+          fileId: { type: "string" },
+          sourceObjectKey: { type: "string" },
+          destinationObjectKey: { type: "string" },
+        },
+      },
+      RateLimitDecision: {
+        type: "object",
+        additionalProperties: false,
+        required: ["allowed", "retryAfter"],
+        properties: {
+          allowed: { type: "boolean" },
+          retryAfter: { type: "integer", minimum: 0 },
+        },
+      },
+      File: {
+        type: "object",
+        additionalProperties: false,
+        description: "Public metadata for a ready file.",
+        required: [
+          "id",
+          "createdAt",
+          "path",
+          "parentPath",
+          "basename",
+          "contentType",
+          "size",
+          "status",
+          "completedAt",
+        ],
+        properties: {
+          id: { type: "string" },
+          createdAt: { type: "number" },
+          path: { type: "string" },
+          parentPath: { type: "string" },
+          basename: { type: "string" },
+          contentType: { type: "string" },
+          size: { type: "integer", minimum: 0 },
+          etag: { type: "string" },
+          status: { type: "string", const: "ready" },
+          completedAt: { type: "number" },
         },
       },
       FileEntry: {

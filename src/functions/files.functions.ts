@@ -3,7 +3,6 @@ import { createServerFn } from "@tanstack/react-start"
 import { ConvexHttpClient } from "convex/browser"
 import { z } from "zod"
 
-import type { Doc } from "../../convex/_generated/dataModel"
 import { FileRestService } from "@/server/files/file-api.server"
 
 const MAX_SINGLE_PART_SIZE = Math.floor(4.995 * 1024 ** 3)
@@ -126,7 +125,7 @@ export const completeFileUpload = createServerFn({ method: "POST" })
     if (!limited.ok) return failure("INTERNAL_ERROR", limited.error.message)
     const result = await service.complete(data.fileId)
     return result.ok
-      ? { ok: true as const, value: result.value as Doc<"files"> }
+      ? { ok: true as const, value: result.value }
       : failure("INTERNAL_ERROR", result.error.message)
   })
 

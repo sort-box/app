@@ -54,4 +54,36 @@ describe("OpenAPI document", () => {
 
     expect(new Set(operationIds).size).toBe(operationIds.length)
   })
+
+  it("keeps internal storage and ownership fields out of public file data", () => {
+    const publicFile = openApiDocument.components.schemas.File
+
+    expect(publicFile.properties).not.toHaveProperty("objectKey")
+    expect(publicFile.properties).not.toHaveProperty("ownerClerkUserId")
+    expect(publicFile.properties).not.toHaveProperty("ownerTokenIdentifier")
+  })
+
+  it("documents every trusted file operation with a specific variant", () => {
+    const trusted =
+      openApiDocument.components.schemas.TrustedFileOperation.oneOf
+    const operations = trusted.map(
+      (variant) => variant.properties.operation.const
+    )
+
+    expect(operations).toEqual([
+      "getOwned",
+      "list",
+      "consumeRateLimit",
+      "createUpload",
+      "completeUpload",
+      "completeCopy",
+      "failPending",
+      "reserveCopy",
+      "move",
+      "beginDelete",
+      "completeDelete",
+      "cancelDelete",
+    ])
+    expect(trusted.every((variant) => !variant.additionalProperties)).toBe(true)
+  })
 })

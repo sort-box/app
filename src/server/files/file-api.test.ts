@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 
-import { parseDirectoryPath, parseFilePath } from "./file-api.server"
+import {
+  parseDirectoryPath,
+  parseFilePath,
+  toPublicFile,
+} from "./file-api.server"
 
 describe("private file paths", () => {
   it("normalizes valid nested paths", () => {
@@ -34,5 +38,45 @@ describe("private file paths", () => {
       ok: true,
       value: "/reports/2026",
     })
+  })
+})
+
+describe("public file metadata", () => {
+  it("does not expose ownership or object-storage identifiers", () => {
+    const result = toPublicFile({
+      _id: "file-id",
+      _creationTime: 10,
+      ownerClerkUserId: "user-id",
+      ownerTokenIdentifier: "issuer|user-id",
+      objectKey: "files/private-key",
+      originalName: "report.pdf",
+      declaredContentType: "application/pdf",
+      declaredSize: 42,
+      verifiedContentType: "application/pdf",
+      verifiedSize: 42,
+      etag: "etag",
+      status: "ready",
+      completedAt: 20,
+      path: "/report.pdf",
+      parentPath: "/",
+      basename: "report.pdf",
+      operation: "upload",
+      usageBackfilledAt: 15,
+    } as never)
+
+    expect(result).toEqual({
+      id: "file-id",
+      createdAt: 10,
+      path: "/report.pdf",
+      parentPath: "/",
+      basename: "report.pdf",
+      contentType: "application/pdf",
+      size: 42,
+      etag: "etag",
+      status: "ready",
+      completedAt: 20,
+    })
+    expect(result).not.toHaveProperty("objectKey")
+    expect(result).not.toHaveProperty("ownerTokenIdentifier")
   })
 })
