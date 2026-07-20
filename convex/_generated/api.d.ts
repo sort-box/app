@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as aiUsage from "../aiUsage.js";
 import type * as crons from "../crons.js";
 import type * as documentEmbedding from "../documentEmbedding.js";
 import type * as documentEmbeddingAction from "../documentEmbeddingAction.js";
@@ -28,6 +29,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  aiUsage: typeof aiUsage;
   crons: typeof crons;
   documentEmbedding: typeof documentEmbedding;
   documentEmbeddingAction: typeof documentEmbeddingAction;

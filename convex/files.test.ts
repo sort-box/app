@@ -962,6 +962,82 @@ describe("unified usage migration", () => {
   })
 })
 
+describe("AI usage", () => {
+  it("requires an entitlement, records tokens, and enforces its limit", async () => {
+    const t = testBackend()
+    await expect(
+      t.mutation(internal.aiUsage.checkAllowance, {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      })
+    ).rejects.toThrow("AI_ENTITLEMENT_NOT_CONFIGURED")
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userEntitlements", {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+        kind: "ai",
+        tokenLimit: 15,
+      })
+    })
+    await expect(
+      t.mutation(internal.aiUsage.checkAllowance, {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      })
+    ).resolves.toBeNull()
+    await t.mutation(internal.aiUsage.record, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      inputTokens: 12,
+      outputTokens: 3,
+    })
+    await expect(
+      t.mutation(internal.aiUsage.checkAllowance, {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      })
+    ).rejects.toThrow("AI_USAGE_LIMIT_EXCEEDED")
+
+    const usage = await t.run(async (ctx) =>
+      ctx.db
+        .query("userUsage")
+        .withIndex("by_owner_and_kind", (q) =>
+          q
+            .eq("ownerTokenIdentifier", owner.ownerTokenIdentifier)
+            .eq("kind", "ai")
+        )
+        .unique()
+    )
+    expect(usage).toMatchObject({
+      kind: "ai",
+      inputTokens: 12,
+      outputTokens: 3,
+    })
+  })
+
+  it("accumulates input and output tokens independently", async () => {
+    const t = testBackend()
+    await t.mutation(internal.aiUsage.record, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      inputTokens: 4,
+      outputTokens: 2,
+    })
+    await t.mutation(internal.aiUsage.record, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      inputTokens: 3,
+      outputTokens: 1,
+    })
+
+    const usage = await t.run(async (ctx) =>
+      ctx.db
+        .query("userUsage")
+        .withIndex("by_owner_and_kind", (q) =>
+          q
+            .eq("ownerTokenIdentifier", owner.ownerTokenIdentifier)
+            .eq("kind", "ai")
+        )
+        .unique()
+    )
+    expect(usage).toMatchObject({ inputTokens: 7, outputTokens: 3 })
+  })
+})
+
 describe("embedding backfill migration", () => {
   it("is dry-run safe, resumable, and idempotent", async () => {
     const t = testBackend()

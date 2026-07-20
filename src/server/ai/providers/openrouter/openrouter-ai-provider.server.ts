@@ -28,7 +28,10 @@ type PendingToolCall = {
 }
 
 function providerError(
-  code: AiProviderError["code"],
+  code: Exclude<
+    AiProviderError["code"],
+    "USAGE_LIMIT_EXCEEDED" | "USAGE_TRACKING_UNAVAILABLE"
+  >,
   message: string
 ): AiProviderError {
   if (code === "RATE_LIMITED" || code === "UNAVAILABLE") {
