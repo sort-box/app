@@ -383,16 +383,22 @@ describe("CloudPane selection", () => {
     )
 
     renderCloudPane()
-    fireEvent.click(
-      await screen.findByRole("checkbox", { name: "Select a.txt" })
-    )
+    const first = await screen.findByRole("checkbox", { name: "Select a.txt" })
+    fireEvent.click(first)
 
     expect(screen.getByText("1 selected")).toBeTruthy()
     expect(screen.queryByRole("button", { name: "New folder" })).toBeNull()
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select b.txt" }))
+    const second = screen.getByRole("checkbox", { name: "Select b.txt" })
+    const selectAll = screen.getByRole("checkbox", { name: "Select all" })
+    expect(first.className.split(/\s+/)).toContain("opacity-100")
+    expect(second.className.split(/\s+/)).not.toContain("opacity-100")
+    expect(selectAll.className.split(/\s+/)).not.toContain("opacity-100")
+
+    fireEvent.click(second)
 
     expect(screen.getByText("2 selected")).toBeTruthy()
+    expect(selectAll.className.split(/\s+/)).toContain("opacity-100")
   })
 
   it("selects every row from the header checkbox", async () => {

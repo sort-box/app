@@ -703,7 +703,7 @@ export function CloudPane() {
                         onCheckedChange={toggleSelectAll}
                         className={cn(
                           "opacity-0 transition-opacity group-hover/header:opacity-100 focus-visible:opacity-100",
-                          selectedEntries.length > 0 && "opacity-100"
+                          allSelected && "opacity-100"
                         )}
                       />
                     </TableHead>
@@ -722,7 +722,6 @@ export function CloudPane() {
                         entry={entry}
                         activeEntries={activeEntries}
                         selected={selectedIds.has(entry._id)}
-                        selectionActive={selectedEntries.length > 0}
                         onToggleSelect={toggleSelected}
                         onNavigate={setPath}
                         onDownload={download}
@@ -841,7 +840,6 @@ function EntryRow({
   entry,
   activeEntries,
   selected,
-  selectionActive,
   onToggleSelect,
   onNavigate,
   onDownload,
@@ -853,7 +851,6 @@ function EntryRow({
   entry: FileEntry
   activeEntries: Array<FileEntry>
   selected: boolean
-  selectionActive: boolean
   onToggleSelect: (entry: FileEntry, checked: boolean) => void
   onNavigate: (path: string) => void
   onDownload: (entry: FileEntry) => void
@@ -885,7 +882,7 @@ function EntryRow({
         onCheckedChange={(checked) => onToggleSelect(entry, checked)}
         className={cn(
           "opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100",
-          (selected || selectionActive) && "opacity-100"
+          selected && "opacity-100"
         )}
       />
     </TableCell>
