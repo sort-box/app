@@ -30,16 +30,6 @@ import {
   type FileEntry,
 } from "./api"
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
-import {
   Breadcrumb,
   BreadcrumbItem,
   BreadcrumbLink,
@@ -106,7 +96,9 @@ export function CloudPane() {
   const [path, setPath] = useState("/")
   const [renameTarget, setRenameTarget] = useState<FileEntry | null>(null)
   const [moveTarget, setMoveTarget] = useState<FileEntry | null>(null)
-  const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null)
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<string>>(
+    () => new Set()
+  )
 
   const queryClient = useQueryClient()
   const invalidate = () =>
@@ -115,7 +107,7 @@ export function CloudPane() {
   const directory = useDirectory(path)
   const entries = sortEntries(
     directory.data?.pages.flatMap((page) => page.page) ?? []
-  )
+  ).filter((entry) => !pendingDeleteIds.has(entry._id))
   const segments = path === "/" ? [] : path.slice(1).split("/")
 
   const renameMutation = useMutation({
@@ -145,15 +137,39 @@ export function CloudPane() {
     onError: (error) => toast.error(errorMessage(error)),
   })
 
+  const restoreEntry = (id: string) =>
+    setPendingDeleteIds((prev) => {
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+
   const deleteMutation = useMutation({
     mutationFn: (entry: FileEntry) => deleteFile(entry.fileId!),
-    onSuccess: () => {
-      invalidate()
-      setDeleteTarget(null)
-      toast.success("File deleted.")
+    onSuccess: async (_, entry) => {
+      await invalidate()
+      restoreEntry(entry._id)
     },
-    onError: (error) => toast.error(errorMessage(error)),
+    onError: (error, entry) => {
+      toast.error(errorMessage(error))
+      restoreEntry(entry._id)
+    },
   })
+
+  const scheduleDelete = (entry: FileEntry) => {
+    setPendingDeleteIds((prev) => new Set(prev).add(entry._id))
+    const timeout = window.setTimeout(() => deleteMutation.mutate(entry), 5000)
+    toast(`Deleting “${entry.basename}”…`, {
+      duration: 5000,
+      action: {
+        label: "Cancel",
+        onClick: () => {
+          window.clearTimeout(timeout)
+          restoreEntry(entry._id)
+        },
+      },
+    })
+  }
 
   const fileInput = useRef<HTMLInputElement>(null)
   const uploadMutation = useMutation({
@@ -355,7 +371,7 @@ export function CloudPane() {
                                 <DropdownMenuSeparator />
                                 <DropdownMenuItem
                                   variant="destructive"
-                                  onClick={() => setDeleteTarget(entry)}
+                                  onClick={() => scheduleDelete(entry)}
                                 >
                                   <Trash2Icon />
                                   Delete
@@ -410,37 +426,6 @@ export function CloudPane() {
           }
           onClose={() => setMoveTarget(null)}
         />
-      )}
-      {deleteTarget && (
-        <AlertDialog
-          open
-          onOpenChange={(open) => !open && setDeleteTarget(null)}
-        >
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>
-                Delete “{deleteTarget.basename}”?
-              </AlertDialogTitle>
-              <AlertDialogDescription>
-                This file will be permanently deleted. This action cannot be
-                undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                variant="destructive"
-                disabled={deleteMutation.isPending}
-                onClick={() => deleteMutation.mutate(deleteTarget)}
-              >
-                {deleteMutation.isPending && (
-                  <Loader2Icon className="animate-spin" />
-                )}
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
       )}
     </div>
   )
