@@ -48,6 +48,7 @@ const entryValidator = v.object({
   kind: v.union(v.literal("file"), v.literal("directory")),
   fileId: v.optional(v.id("files")),
   status: fileStatus,
+  explicit: v.optional(v.boolean()),
 })
 
 async function owned(
@@ -257,6 +258,7 @@ async function pruneDirectories(
       )
       .first()
     if (!directory || directory.kind !== "directory") return
+    if (directory.explicit) return
     await ctx.db.delete(directory._id)
     path = directory.parentPath
   }
@@ -631,6 +633,154 @@ export const move = internalMutation({
     }
     await pruneDirectories(ctx, args.ownerTokenIdentifier, oldParentPath)
     return (await ctx.db.get(file._id))!
+  },
+})
+
+export const createDirectory = internalMutation({
+  args: {
+    ownerTokenIdentifier: v.string(),
+    path: v.string(),
+    parentPath: v.string(),
+    basename: v.string(),
+  },
+  returns: entryValidator,
+  handler: async (ctx, args) => {
+    assertCanonicalPath(args.path, args.parentPath, args.basename)
+    const existing = await ctx.db
+      .query("fileEntries")
+      .withIndex("by_owner_path", (q) =>
+        q
+          .eq("ownerTokenIdentifier", args.ownerTokenIdentifier)
+          .eq("path", args.path)
+      )
+      .first()
+    if (existing) {
+      if (existing.kind !== "directory" || existing.explicit) {
+        throw new ConvexError("PATH_CONFLICT")
+      }
+      await ctx.db.patch(existing._id, { explicit: true })
+      return (await ctx.db.get(existing._id))!
+    }
+    await ensureDirectories(ctx, args.ownerTokenIdentifier, args.parentPath)
+    const id = await ctx.db.insert("fileEntries", {
+      ownerTokenIdentifier: args.ownerTokenIdentifier,
+      path: args.path,
+      parentPath: args.parentPath,
+      basename: args.basename,
+      kind: "directory",
+      status: "ready",
+      explicit: true,
+    })
+    return (await ctx.db.get(id))!
+  },
+})
+
+export const deleteDirectory = internalMutation({
+  args: { ownerTokenIdentifier: v.string(), path: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const entry = await ctx.db
+      .query("fileEntries")
+      .withIndex("by_owner_path", (q) =>
+        q
+          .eq("ownerTokenIdentifier", args.ownerTokenIdentifier)
+          .eq("path", args.path)
+      )
+      .first()
+    if (!entry || entry.kind !== "directory") {
+      throw new ConvexError("FILE_NOT_FOUND")
+    }
+    for (const status of ["ready", "pending", "deleting"] as const) {
+      const child = await ctx.db
+        .query("fileEntries")
+        .withIndex("by_owner_parent_status_path", (q) =>
+          q
+            .eq("ownerTokenIdentifier", args.ownerTokenIdentifier)
+            .eq("parentPath", args.path)
+            .eq("status", status)
+        )
+        .first()
+      if (child) throw new ConvexError("DIRECTORY_NOT_EMPTY")
+    }
+    await ctx.db.delete(entry._id)
+    await pruneDirectories(ctx, args.ownerTokenIdentifier, entry.parentPath)
+    return null
+  },
+})
+
+export const MAX_DIRECTORY_MOVE_ENTRIES = 1000
+
+export const moveDirectory = internalMutation({
+  args: {
+    ownerTokenIdentifier: v.string(),
+    sourcePath: v.string(),
+    path: v.string(),
+    parentPath: v.string(),
+    basename: v.string(),
+  },
+  returns: entryValidator,
+  handler: async (ctx, args) => {
+    assertCanonicalPath(args.path, args.parentPath, args.basename)
+    const sourceSegments = args.sourcePath.startsWith("/")
+      ? args.sourcePath.slice(1).split("/")
+      : []
+    assertCanonicalPath(
+      args.sourcePath,
+      sourceSegments.length <= 1
+        ? "/"
+        : `/${sourceSegments.slice(0, -1).join("/")}`,
+      sourceSegments.at(-1) ?? ""
+    )
+    const source = await ctx.db
+      .query("fileEntries")
+      .withIndex("by_owner_path", (q) =>
+        q
+          .eq("ownerTokenIdentifier", args.ownerTokenIdentifier)
+          .eq("path", args.sourcePath)
+      )
+      .first()
+    if (!source || source.kind !== "directory") {
+      throw new ConvexError("FILE_NOT_FOUND")
+    }
+    if (args.path === args.sourcePath) return source
+    if (args.path.startsWith(`${args.sourcePath}/`)) {
+      throw new ConvexError("INVALID_PATH")
+    }
+    await assertPathAvailable(ctx, args.ownerTokenIdentifier, args.path)
+    const prefix = `${args.sourcePath}/`
+    const descendants = await ctx.db
+      .query("fileEntries")
+      .withIndex("by_owner_path", (q) =>
+        q
+          .eq("ownerTokenIdentifier", args.ownerTokenIdentifier)
+          .gte("path", prefix)
+          .lt("path", `${prefix}\uffff`)
+      )
+      .take(MAX_DIRECTORY_MOVE_ENTRIES + 1)
+    if (descendants.length > MAX_DIRECTORY_MOVE_ENTRIES) {
+      throw new ConvexError("DIRECTORY_TOO_LARGE")
+    }
+    if (descendants.some((descendant) => descendant.status !== "ready")) {
+      throw new ConvexError("INVALID_FILE_STATE")
+    }
+    const oldParentPath = source.parentPath
+    await ensureDirectories(ctx, args.ownerTokenIdentifier, args.parentPath)
+    await ctx.db.patch(source._id, {
+      path: args.path,
+      parentPath: args.parentPath,
+      basename: args.basename,
+    })
+    for (const descendant of descendants) {
+      const path = args.path + descendant.path.slice(args.sourcePath.length)
+      const parentPath =
+        args.path + descendant.parentPath.slice(args.sourcePath.length)
+      await ctx.db.patch(descendant._id, { path, parentPath })
+      if (descendant.fileId) {
+        await ctx.db.patch(descendant.fileId, { path, parentPath })
+      }
+    }
+    await pruneDirectories(ctx, args.ownerTokenIdentifier, oldParentPath)
+    return (await ctx.db.get(source._id))!
   },
 })
 

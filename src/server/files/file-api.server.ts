@@ -270,6 +270,13 @@ function mapFailure(value: unknown): Failure {
     return error("FILE_NOT_FOUND", "The file was not found.")
   if (message.includes("PATH_CONFLICT"))
     return error("PATH_CONFLICT", "The destination path already exists.")
+  if (message.includes("DIRECTORY_NOT_EMPTY"))
+    return error("INVALID_FILE_STATE", "The folder is not empty.")
+  if (message.includes("DIRECTORY_TOO_LARGE"))
+    return error(
+      "INVALID_INPUT",
+      "This folder contains too many items to move."
+    )
   if (message.includes("QUOTA_EXCEEDED"))
     return error("QUOTA_EXCEEDED", "The storage quota would be exceeded.")
   if (message.includes("INVALID_FILE_STATE"))
@@ -315,6 +322,19 @@ export type PublicFileEntry = {
   kind: "file" | "directory"
   fileId?: string
   status: "ready"
+}
+
+export function toPublicFileEntry(entry: Doc<"fileEntries">): PublicFileEntry {
+  return {
+    _id: entry._id,
+    _creationTime: entry._creationTime,
+    path: entry.path,
+    parentPath: entry.parentPath,
+    basename: entry.basename,
+    kind: entry.kind,
+    fileId: entry.fileId,
+    status: "ready",
+  }
 }
 
 export function toPublicFile(file: Doc<"files">): PublicFile {
@@ -513,16 +533,7 @@ export class FileRestService {
     return {
       ok: true,
       value: {
-        page: result.value.page.map((entry): PublicFileEntry => ({
-          _id: entry._id,
-          _creationTime: entry._creationTime,
-          path: entry.path,
-          parentPath: entry.parentPath,
-          basename: entry.basename,
-          kind: entry.kind,
-          fileId: entry.fileId,
-          status: "ready",
-        })),
+        page: result.value.page.map(toPublicFileEntry),
         isDone: result.value.isDone,
         continueCursor: result.value.continueCursor,
       },
@@ -540,6 +551,44 @@ export class FileRestService {
       ...path.value,
     })
     return moved.ok ? { ok: true, value: toPublicFile(moved.value) } : moved
+  }
+
+  async createFolder(path: string): Promise<FileApiResult<PublicFileEntry>> {
+    const parsed = parseFilePath(path)
+    if (!parsed.ok) return parsed
+    const created = await this.privileged<Doc<"fileEntries">>(
+      "createDirectory",
+      parsed.value
+    )
+    return created.ok
+      ? { ok: true, value: toPublicFileEntry(created.value) }
+      : created
+  }
+
+  async moveFolder(
+    path: string,
+    destinationPath: string
+  ): Promise<FileApiResult<PublicFileEntry>> {
+    const source = parseFilePath(path)
+    if (!source.ok) return source
+    const destination = parseFilePath(destinationPath)
+    if (!destination.ok) return destination
+    const moved = await this.privileged<Doc<"fileEntries">>("moveDirectory", {
+      sourcePath: source.value.path,
+      ...destination.value,
+    })
+    return moved.ok
+      ? { ok: true, value: toPublicFileEntry(moved.value) }
+      : moved
+  }
+
+  async deleteFolder(path: string): Promise<FileApiResult<null>> {
+    const parsed = parseFilePath(path)
+    if (!parsed.ok) return parsed
+    const deleted = await this.privileged<null>("deleteDirectory", {
+      path: parsed.value.path,
+    })
+    return deleted.ok ? { ok: true, value: null } : deleted
   }
 
   async copy(

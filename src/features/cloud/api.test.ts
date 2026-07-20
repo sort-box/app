@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { uploadFile } from "./api"
+import { deleteFolder, moveFolder, uploadFile } from "./api"
 
 function rateLimited(): Response {
   return new Response(
@@ -71,5 +71,38 @@ describe("uploadFile rate limit pacing", () => {
       retryable: true,
     })
     expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+})
+
+describe("folder requests", () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("encodes the folder path when deleting", async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(null, { status: 204 })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    await deleteFolder("/reports/mid year")
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/folders?path=%2Freports%2Fmid+year",
+      { method: "DELETE" }
+    )
+  })
+
+  it("sends the source and destination paths when moving", async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ data: {} }), { status: 200 })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    await moveFolder("/a", "/x/a")
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/folders", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: "/a", destinationPath: "/x/a" }),
+    })
   })
 })

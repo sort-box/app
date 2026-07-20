@@ -83,6 +83,9 @@ describe("OpenAPI document", () => {
       "beginDelete",
       "completeDelete",
       "cancelDelete",
+      "createDirectory",
+      "deleteDirectory",
+      "moveDirectory",
     ])
     expect(trusted.every((variant) => !variant.additionalProperties)).toBe(true)
   })
