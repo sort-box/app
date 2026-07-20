@@ -31,7 +31,8 @@ export class FileApiError extends Error {
   constructor(
     readonly code: FileApiErrorCode,
     message: string,
-    readonly retryable: boolean
+    readonly retryable: boolean,
+    readonly retryAfter?: number
   ) {
     super(message)
     this.name = "FileApiError"
@@ -43,17 +44,59 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   if (response.status === 204) return null as T
   const body = (await response.json().catch(() => null)) as
     | { data: T }
-    | { error: { code: FileApiErrorCode; message: string; retryable: boolean } }
+    | {
+        error: {
+          code: FileApiErrorCode
+          message: string
+          retryable: boolean
+          retryAfter?: number
+        }
+      }
     | null
   if (!response.ok || !body || "error" in body) {
     const error = body && "error" in body ? body.error : null
     throw new FileApiError(
       error?.code ?? "INTERNAL_ERROR",
       error?.message ?? "The file service is unavailable.",
-      error?.retryable ?? false
+      error?.retryable ?? false,
+      error?.retryAfter
     )
   }
   return body.data
+}
+
+const maxRateLimitRetries = 3
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Like `request`, but waits out RATE_LIMITED responses using the
+ * server-provided retry delay so bulk uploads pace themselves instead of
+ * failing.
+ */
+async function requestPaced<T>(
+  url: string,
+  init: RequestInit | undefined,
+  onRateLimit?: (retryAfterSeconds: number) => void
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await request<T>(url, init)
+    } catch (error) {
+      if (
+        !(error instanceof FileApiError) ||
+        error.code !== "RATE_LIMITED" ||
+        attempt >= maxRateLimitRetries
+      ) {
+        throw error
+      }
+      const seconds = Math.min(error.retryAfter ?? 15, 90)
+      onRateLimit?.(seconds)
+      await sleep(seconds * 1000 + Math.random() * 500)
+    }
+  }
 }
 
 export function listFiles(input: {
@@ -91,13 +134,21 @@ type UploadTicket = {
   }
 }
 
-export async function uploadFile(path: string, file: File): Promise<void> {
+export async function uploadFile(
+  path: string,
+  file: File,
+  options?: { onRateLimit?: (retryAfterSeconds: number) => void }
+): Promise<void> {
   const contentType = file.type || "application/octet-stream"
-  const ticket = await request<UploadTicket>("/api/files/uploads", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, contentType, size: file.size }),
-  })
+  const ticket = await requestPaced<UploadTicket>(
+    "/api/files/uploads",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, contentType, size: file.size }),
+    },
+    options?.onRateLimit
+  )
   let stored: Response
   try {
     stored = await fetch(ticket.upload.url, {
@@ -116,7 +167,11 @@ export async function uploadFile(path: string, file: File): Promise<void> {
   if (!stored.ok) {
     throw new FileApiError("STORAGE_UNAVAILABLE", "The upload failed.", true)
   }
-  await request(`/api/files/${ticket.fileId}/complete`, { method: "POST" })
+  await requestPaced(
+    `/api/files/${ticket.fileId}/complete`,
+    { method: "POST" },
+    options?.onRateLimit
+  )
 }
 
 export function joinPath(directory: string, basename: string): string {

@@ -288,8 +288,11 @@ export const consumeRateLimit = internalMutation({
   },
   returns: v.object({ allowed: v.boolean(), retryAfter: v.number() }),
   handler: async (ctx, args) => {
+    // Per user and minute. Uploads consume one upload token (ticket) plus
+    // one mutation token (complete) per file, so mutation stays above upload
+    // to leave headroom for interactive rename/move/delete during a batch.
     const limit =
-      args.bucket === "read" ? 60 : args.bucket === "mutation" ? 20 : 10
+      args.bucket === "read" ? 60 : args.bucket === "mutation" ? 90 : 60
     const now = Date.now()
     const record = await ctx.db
       .query("fileRateLimits")
