@@ -18,6 +18,7 @@ import {
   deleteFile,
   deleteFolder,
   listFiles,
+  moveFolder,
   type FileEntry,
   type FileListPage,
 } from "./api"
@@ -248,6 +249,7 @@ describe("CloudPane folders", () => {
     vi.mocked(listFiles).mockReset()
     vi.mocked(createFolder).mockReset()
     vi.mocked(deleteFolder).mockReset()
+    vi.mocked(moveFolder).mockReset()
   })
 
   afterEach(() => {
@@ -298,6 +300,67 @@ describe("CloudPane folders", () => {
       path: "/reports",
       cursor: null,
     })
+  })
+
+  it("renames a folder from its menu", async () => {
+    const reports = entry("reports", {
+      kind: "directory",
+      fileId: undefined,
+      path: "/reports",
+    })
+    vi.mocked(listFiles).mockResolvedValue(page([reports], true))
+    vi.mocked(moveFolder).mockResolvedValue({
+      ...reports,
+      path: "/archive",
+      basename: "archive",
+    })
+
+    renderCloudPane()
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Actions for reports" })
+    )
+    fireEvent.click(await screen.findByText("Rename"))
+    fireEvent.change(await screen.findByLabelText("Folder name"), {
+      target: { value: "archive" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }))
+
+    await waitFor(() =>
+      expect(moveFolder).toHaveBeenCalledWith("/reports", "/archive")
+    )
+  })
+
+  it("moves a folder from its menu", async () => {
+    const reports = entry("reports", {
+      kind: "directory",
+      fileId: undefined,
+      path: "/reports",
+    })
+    const archive = entry("archive", {
+      kind: "directory",
+      fileId: undefined,
+      path: "/archive",
+    })
+    vi.mocked(listFiles).mockImplementation(async ({ path }) =>
+      page(path === "/" ? [reports, archive] : [], true)
+    )
+    vi.mocked(moveFolder).mockResolvedValue({
+      ...reports,
+      path: "/archive/reports",
+      parentPath: "/archive",
+    })
+
+    renderCloudPane()
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Actions for reports" })
+    )
+    fireEvent.click(await screen.findByText("Move to…"))
+    fireEvent.click(await screen.findByRole("button", { name: "archive" }))
+    fireEvent.click(screen.getByRole("button", { name: "Move here" }))
+
+    await waitFor(() =>
+      expect(moveFolder).toHaveBeenCalledWith("/reports", "/archive/reports")
+    )
   })
 })
 

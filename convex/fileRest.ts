@@ -91,7 +91,7 @@ async function assertPathAvailable(
       q.eq("ownerTokenIdentifier", ownerTokenIdentifier).eq("path", path)
     )
     .first()
-  if (existing && existing.fileId !== excluding) {
+  if (existing && (excluding === undefined || existing.fileId !== excluding)) {
     throw new ConvexError("PATH_CONFLICT")
   }
 }

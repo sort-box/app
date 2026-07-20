@@ -232,11 +232,15 @@ export function CloudPane() {
 
   const renameMutation = useMutation({
     mutationFn: ({ entry, name }: { entry: FileEntry; name: string }) =>
-      moveFile(entry.fileId!, joinPath(entry.parentPath, name)),
-    onSuccess: () => {
+      entry.kind === "directory"
+        ? moveFolder(entry.path, joinPath(entry.parentPath, name))
+        : moveFile(entry.fileId!, joinPath(entry.parentPath, name)),
+    onSuccess: (_, { entry }) => {
       invalidate()
       setRenameTarget(null)
-      toast.success("File renamed.")
+      toast.success(
+        entry.kind === "directory" ? "Folder renamed." : "File renamed."
+      )
     },
     onError: (error) => toast.error(errorMessage(error)),
   })
@@ -928,6 +932,15 @@ function EntryRow({
               <EllipsisIcon />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => onRename(entry)}>
+                <PencilIcon />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onMove(entry)}>
+                <FolderInputIcon />
+                Move to…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem
                 variant="destructive"
                 onClick={() => onDeleteFolder(entry)}
@@ -1044,6 +1057,7 @@ function RenameDialog({
   const trimmed = name.trim()
   const valid =
     trimmed.length > 0 && !trimmed.includes("/") && trimmed !== entry.basename
+  const entryType = entry.kind === "directory" ? "folder" : "file"
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -1055,7 +1069,7 @@ function RenameDialog({
           }}
         >
           <DialogHeader>
-            <DialogTitle>Rename file</DialogTitle>
+            <DialogTitle>Rename {entryType}</DialogTitle>
             <DialogDescription>
               Choose a new name for “{entry.basename}”.
             </DialogDescription>
@@ -1064,7 +1078,9 @@ function RenameDialog({
             autoFocus
             value={name}
             onChange={(event) => setName(event.target.value)}
-            aria-label="File name"
+            aria-label={
+              entry.kind === "directory" ? "Folder name" : "File name"
+            }
             className="my-4"
           />
           <DialogFooter>
@@ -1217,7 +1233,7 @@ function MoveDialog({
           </Button>
           <Button
             type="button"
-            disabled={pending || destination === entry.parentPath}
+            disabled={pending || !isValidDropTarget(entry, destination)}
             onClick={() => onMove(destination)}
           >
             {pending && <Loader2Icon className="animate-spin" />}

@@ -347,6 +347,38 @@ describe("directories", () => {
     ).rejects.toThrow("PATH_CONFLICT")
   })
 
+  it("rejects creating or moving an entry over an existing folder", async () => {
+    const t = convexTest(schema, modules)
+    await uploadReady(t, "/source/a.txt")
+    await t.mutation(internal.fileRest.createDirectory, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      path: "/destination/source",
+      parentPath: "/destination",
+      basename: "source",
+    })
+
+    await expect(
+      t.mutation(internal.fileRest.moveDirectory, {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+        sourcePath: "/source",
+        path: "/destination/source",
+        parentPath: "/destination",
+        basename: "source",
+      })
+    ).rejects.toThrow("PATH_CONFLICT")
+
+    await expect(
+      t.mutation(internal.fileRest.createUpload, {
+        ...owner,
+        path: "/destination/source",
+        parentPath: "/destination",
+        basename: "source",
+        contentType: "text/plain",
+        size: 1,
+      })
+    ).rejects.toThrow("PATH_CONFLICT")
+  })
+
   it("deletes an empty folder and prunes its implicit ancestors", async () => {
     const t = convexTest(schema, modules)
     await t.mutation(internal.fileRest.createDirectory, {
