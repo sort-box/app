@@ -5,11 +5,16 @@ import {
 import { ConvexError, v } from "convex/values"
 
 import type { Doc, Id } from "./_generated/dataModel"
-import { mutation, query, type MutationCtx } from "./_generated/server"
+import {
+  internalMutation,
+  internalQuery,
+  type MutationCtx,
+} from "./_generated/server"
 import { fileStatus } from "./schema"
 
 const TEN_GIB = 10 * 1024 ** 3
 const WINDOW_MS = 60_000
+const MAX_FILE_SIZE = Math.floor(4.995 * 1024 ** 3)
 
 const fileValidator = v.object({
   _id: v.id("files"),
@@ -44,19 +49,6 @@ const entryValidator = v.object({
   fileId: v.optional(v.id("files")),
   status: fileStatus,
 })
-
-async function identity(ctx: {
-  auth: {
-    getUserIdentity: () => Promise<{
-      subject: string
-      tokenIdentifier: string
-    } | null>
-  }
-}) {
-  const value = await ctx.auth.getUserIdentity()
-  if (!value) throw new ConvexError("NOT_AUTHENTICATED")
-  return value
-}
 
 async function owned(
   ctx: MutationCtx,
@@ -103,6 +95,43 @@ async function assertPathAvailable(
   }
 }
 
+function assertCanonicalPath(
+  path: string,
+  parentPath: string,
+  basename: string
+) {
+  const normalized = path.normalize("NFC")
+  const segments = normalized.startsWith("/")
+    ? normalized.slice(1).split("/")
+    : []
+  const expectedParent =
+    segments.length === 1 ? "/" : `/${segments.slice(0, -1).join("/")}`
+  const invalidCharacter = Array.from(normalized).some((character) => {
+    const code = character.charCodeAt(0)
+    return code <= 31 || code === 127
+  })
+  if (
+    normalized !== path ||
+    path === "/" ||
+    !path.startsWith("/") ||
+    path.endsWith("/") ||
+    path.includes("\\") ||
+    invalidCharacter ||
+    new TextEncoder().encode(path).byteLength > 1024 ||
+    segments.some(
+      (segment) =>
+        !segment ||
+        segment === "." ||
+        segment === ".." ||
+        new TextEncoder().encode(segment).byteLength > 255
+    ) ||
+    basename !== segments.at(-1) ||
+    parentPath !== expectedParent
+  ) {
+    throw new ConvexError("INVALID_PATH")
+  }
+}
+
 async function ensureDirectories(
   ctx: MutationCtx,
   ownerTokenIdentifier: string,
@@ -140,11 +169,10 @@ async function fileEntry(
 ) {
   return await ctx.db
     .query("fileEntries")
-    .withIndex("by_owner_path", (q) =>
-      q.eq("ownerTokenIdentifier", ownerTokenIdentifier)
+    .withIndex("by_owner_fileId", (q) =>
+      q.eq("ownerTokenIdentifier", ownerTokenIdentifier).eq("fileId", fileId)
     )
-    .filter((q) => q.eq(q.field("fileId"), fileId))
-    .first()
+    .unique()
 }
 
 async function pruneDirectories(
@@ -172,7 +200,16 @@ async function pruneDirectories(
           .eq("status", "pending")
       )
       .first()
-    if (children || pending) return
+    const deleting = await ctx.db
+      .query("fileEntries")
+      .withIndex("by_owner_parent_status_path", (q) =>
+        q
+          .eq("ownerTokenIdentifier", ownerTokenIdentifier)
+          .eq("parentPath", path)
+          .eq("status", "deleting")
+      )
+      .first()
+    if (children || pending || deleting) return
     const directory = await ctx.db
       .query("fileEntries")
       .withIndex("by_owner_path", (q) =>
@@ -200,24 +237,25 @@ async function reserveBytes(
   })
 }
 
-export const consumeRateLimit = mutation({
+export const consumeRateLimit = internalMutation({
   args: {
+    ownerTokenIdentifier: v.string(),
     bucket: v.union(
       v.literal("read"),
       v.literal("mutation"),
       v.literal("upload")
     ),
-    limit: v.number(),
   },
   returns: v.object({ allowed: v.boolean(), retryAfter: v.number() }),
   handler: async (ctx, args) => {
-    const owner = await identity(ctx)
+    const limit =
+      args.bucket === "read" ? 60 : args.bucket === "mutation" ? 20 : 10
     const now = Date.now()
     const record = await ctx.db
       .query("fileRateLimits")
       .withIndex("by_owner_bucket", (q) =>
         q
-          .eq("ownerTokenIdentifier", owner.tokenIdentifier)
+          .eq("ownerTokenIdentifier", args.ownerTokenIdentifier)
           .eq("bucket", args.bucket)
       )
       .unique()
@@ -226,7 +264,7 @@ export const consumeRateLimit = mutation({
         await ctx.db.patch(record._id, { windowStartedAt: now, count: 1 })
       } else {
         await ctx.db.insert("fileRateLimits", {
-          ownerTokenIdentifier: owner.tokenIdentifier,
+          ownerTokenIdentifier: args.ownerTokenIdentifier,
           bucket: args.bucket,
           windowStartedAt: now,
           count: 1,
@@ -238,36 +276,39 @@ export const consumeRateLimit = mutation({
       1,
       Math.ceil((WINDOW_MS - (now - record.windowStartedAt)) / 1000)
     )
-    if (record.count >= args.limit) return { allowed: false, retryAfter }
+    if (record.count >= limit) return { allowed: false, retryAfter }
     await ctx.db.patch(record._id, { count: record.count + 1 })
     return { allowed: true, retryAfter: 0 }
   },
 })
 
-export const createUpload = mutation({
+export const createUpload = internalMutation({
   args: {
+    ownerClerkUserId: v.string(),
+    ownerTokenIdentifier: v.string(),
     path: v.string(),
     parentPath: v.string(),
     basename: v.string(),
     contentType: v.string(),
     size: v.number(),
-    quota: v.optional(v.number()),
   },
   returns: v.object({ fileId: v.id("files"), objectKey: v.string() }),
   handler: async (ctx, args) => {
-    const owner = await identity(ctx)
-    await assertPathAvailable(ctx, owner.tokenIdentifier, args.path)
-    await ensureDirectories(ctx, owner.tokenIdentifier, args.parentPath)
-    await reserveBytes(
-      ctx,
-      owner.tokenIdentifier,
-      args.size,
-      args.quota ?? TEN_GIB
-    )
+    assertCanonicalPath(args.path, args.parentPath, args.basename)
+    if (
+      !Number.isInteger(args.size) ||
+      args.size < 0 ||
+      args.size > MAX_FILE_SIZE
+    ) {
+      throw new ConvexError("INVALID_SIZE")
+    }
+    await assertPathAvailable(ctx, args.ownerTokenIdentifier, args.path)
+    await ensureDirectories(ctx, args.ownerTokenIdentifier, args.parentPath)
+    await reserveBytes(ctx, args.ownerTokenIdentifier, args.size, TEN_GIB)
     const objectKey = `files/${crypto.randomUUID()}`
     const fileId = await ctx.db.insert("files", {
-      ownerClerkUserId: owner.subject,
-      ownerTokenIdentifier: owner.tokenIdentifier,
+      ownerClerkUserId: args.ownerClerkUserId,
+      ownerTokenIdentifier: args.ownerTokenIdentifier,
       objectKey,
       originalName: args.basename,
       declaredContentType: args.contentType,
@@ -280,7 +321,7 @@ export const createUpload = mutation({
       status: "pending",
     })
     await ctx.db.insert("fileEntries", {
-      ownerTokenIdentifier: owner.tokenIdentifier,
+      ownerTokenIdentifier: args.ownerTokenIdentifier,
       path: args.path,
       parentPath: args.parentPath,
       basename: args.basename,
@@ -292,31 +333,32 @@ export const createUpload = mutation({
   },
 })
 
-export const getOwned = query({
-  args: { fileId: v.id("files") },
+export const getOwned = internalQuery({
+  args: { ownerTokenIdentifier: v.string(), fileId: v.id("files") },
   returns: v.union(fileValidator, v.null()),
   handler: async (ctx, args) => {
-    const owner = await identity(ctx)
     const file = await ctx.db.get("files", args.fileId)
-    return file?.ownerTokenIdentifier === owner.tokenIdentifier ? file : null
+    return file?.ownerTokenIdentifier === args.ownerTokenIdentifier
+      ? file
+      : null
   },
 })
 
-export const list = query({
+export const list = internalQuery({
   args: {
+    ownerTokenIdentifier: v.string(),
     parentPath: v.string(),
     recursive: v.boolean(),
     paginationOpts: paginationOptsValidator,
   },
   returns: paginationResultValidator(entryValidator),
   handler: async (ctx, args) => {
-    const owner = await identity(ctx)
     if (!args.recursive) {
       return await ctx.db
         .query("fileEntries")
         .withIndex("by_owner_parent_status_path", (q) =>
           q
-            .eq("ownerTokenIdentifier", owner.tokenIdentifier)
+            .eq("ownerTokenIdentifier", args.ownerTokenIdentifier)
             .eq("parentPath", args.parentPath)
             .eq("status", "ready")
         )
@@ -327,7 +369,7 @@ export const list = query({
       .query("fileEntries")
       .withIndex("by_owner_path", (q) =>
         q
-          .eq("ownerTokenIdentifier", owner.tokenIdentifier)
+          .eq("ownerTokenIdentifier", args.ownerTokenIdentifier)
           .gte("path", prefix)
           .lt("path", `${prefix}\uffff`)
       )
@@ -338,8 +380,9 @@ export const list = query({
   },
 })
 
-export const completeUpload = mutation({
+export const completeUpload = internalMutation({
   args: {
+    ownerTokenIdentifier: v.string(),
     fileId: v.id("files"),
     verifiedContentType: v.string(),
     verifiedSize: v.number(),
@@ -347,13 +390,18 @@ export const completeUpload = mutation({
   },
   returns: fileValidator,
   handler: async (ctx, args) => {
-    const owner = await identity(ctx)
-    const file = await owned(ctx, args.fileId, owner.tokenIdentifier)
+    const file = await owned(ctx, args.fileId, args.ownerTokenIdentifier)
     if (file.status === "ready") return file
     if (file.status !== "pending" || file.operation !== "upload") {
       throw new ConvexError("INVALID_FILE_STATE")
     }
-    const current = await usage(ctx, owner.tokenIdentifier)
+    if (
+      args.verifiedSize !== file.declaredSize ||
+      args.verifiedContentType !== file.declaredContentType
+    ) {
+      throw new ConvexError("UPLOAD_MISMATCH")
+    }
+    const current = await usage(ctx, args.ownerTokenIdentifier)
     await ctx.db.patch(current._id, {
       reservedBytes: Math.max(0, current.reservedBytes - file.declaredSize),
       usedBytes: current.usedBytes + args.verifiedSize,
@@ -367,20 +415,23 @@ export const completeUpload = mutation({
       failureCode: undefined,
       failedAt: undefined,
     })
-    const entry = await fileEntry(ctx, owner.tokenIdentifier, file._id)
+    const entry = await fileEntry(ctx, args.ownerTokenIdentifier, file._id)
     if (entry) await ctx.db.patch(entry._id, { status: "ready" })
     return (await ctx.db.get(file._id))!
   },
 })
 
-export const failPending = mutation({
-  args: { fileId: v.id("files"), failureCode: v.string() },
+export const failPending = internalMutation({
+  args: {
+    ownerTokenIdentifier: v.string(),
+    fileId: v.id("files"),
+    failureCode: v.string(),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const owner = await identity(ctx)
-    const file = await owned(ctx, args.fileId, owner.tokenIdentifier)
+    const file = await owned(ctx, args.fileId, args.ownerTokenIdentifier)
     if (file.status === "pending") {
-      const current = await usage(ctx, owner.tokenIdentifier)
+      const current = await usage(ctx, args.ownerTokenIdentifier)
       await ctx.db.patch(current._id, {
         reservedBytes: Math.max(0, current.reservedBytes - file.declaredSize),
       })
@@ -389,23 +440,24 @@ export const failPending = mutation({
         failedAt: Date.now(),
         failureCode: args.failureCode,
       })
-      const entry = await fileEntry(ctx, owner.tokenIdentifier, file._id)
+      const entry = await fileEntry(ctx, args.ownerTokenIdentifier, file._id)
       if (entry) {
         await ctx.db.delete(entry._id)
-        await pruneDirectories(ctx, owner.tokenIdentifier, entry.parentPath)
+        await pruneDirectories(ctx, args.ownerTokenIdentifier, entry.parentPath)
       }
     }
     return null
   },
 })
 
-export const reserveCopy = mutation({
+export const reserveCopy = internalMutation({
   args: {
+    ownerClerkUserId: v.string(),
+    ownerTokenIdentifier: v.string(),
     sourceFileId: v.id("files"),
     path: v.string(),
     parentPath: v.string(),
     basename: v.string(),
-    quota: v.optional(v.number()),
   },
   returns: v.object({
     fileId: v.id("files"),
@@ -413,23 +465,27 @@ export const reserveCopy = mutation({
     destinationObjectKey: v.string(),
   }),
   handler: async (ctx, args) => {
-    const owner = await identity(ctx)
-    const source = await owned(ctx, args.sourceFileId, owner.tokenIdentifier)
+    assertCanonicalPath(args.path, args.parentPath, args.basename)
+    const source = await owned(
+      ctx,
+      args.sourceFileId,
+      args.ownerTokenIdentifier
+    )
     if (source.status !== "ready" || source.verifiedSize === undefined) {
       throw new ConvexError("INVALID_FILE_STATE")
     }
-    await assertPathAvailable(ctx, owner.tokenIdentifier, args.path)
-    await ensureDirectories(ctx, owner.tokenIdentifier, args.parentPath)
+    await assertPathAvailable(ctx, args.ownerTokenIdentifier, args.path)
+    await ensureDirectories(ctx, args.ownerTokenIdentifier, args.parentPath)
     await reserveBytes(
       ctx,
-      owner.tokenIdentifier,
+      args.ownerTokenIdentifier,
       source.verifiedSize,
-      args.quota ?? TEN_GIB
+      TEN_GIB
     )
     const destinationObjectKey = `files/${crypto.randomUUID()}`
     const fileId = await ctx.db.insert("files", {
-      ownerClerkUserId: owner.subject,
-      ownerTokenIdentifier: owner.tokenIdentifier,
+      ownerClerkUserId: args.ownerClerkUserId,
+      ownerTokenIdentifier: args.ownerTokenIdentifier,
       objectKey: destinationObjectKey,
       originalName: args.basename,
       declaredContentType:
@@ -443,7 +499,7 @@ export const reserveCopy = mutation({
       status: "pending",
     })
     await ctx.db.insert("fileEntries", {
-      ownerTokenIdentifier: owner.tokenIdentifier,
+      ownerTokenIdentifier: args.ownerTokenIdentifier,
       path: args.path,
       parentPath: args.parentPath,
       basename: args.basename,
@@ -455,8 +511,9 @@ export const reserveCopy = mutation({
   },
 })
 
-export const completeCopy = mutation({
+export const completeCopy = internalMutation({
   args: {
+    ownerTokenIdentifier: v.string(),
     fileId: v.id("files"),
     verifiedContentType: v.string(),
     verifiedSize: v.number(),
@@ -464,13 +521,18 @@ export const completeCopy = mutation({
   },
   returns: fileValidator,
   handler: async (ctx, args) => {
-    const owner = await identity(ctx)
-    const file = await owned(ctx, args.fileId, owner.tokenIdentifier)
+    const file = await owned(ctx, args.fileId, args.ownerTokenIdentifier)
     if (file.status === "ready") return file
     if (file.status !== "pending" || file.operation !== "copy") {
       throw new ConvexError("INVALID_FILE_STATE")
     }
-    const current = await usage(ctx, owner.tokenIdentifier)
+    if (
+      args.verifiedSize !== file.declaredSize ||
+      args.verifiedContentType !== file.declaredContentType
+    ) {
+      throw new ConvexError("UPLOAD_MISMATCH")
+    }
+    const current = await usage(ctx, args.ownerTokenIdentifier)
     await ctx.db.patch(current._id, {
       reservedBytes: Math.max(0, current.reservedBytes - file.declaredSize),
       usedBytes: current.usedBytes + args.verifiedSize,
@@ -482,14 +544,15 @@ export const completeCopy = mutation({
       status: "ready",
       completedAt: Date.now(),
     })
-    const entry = await fileEntry(ctx, owner.tokenIdentifier, file._id)
+    const entry = await fileEntry(ctx, args.ownerTokenIdentifier, file._id)
     if (entry) await ctx.db.patch(entry._id, { status: "ready" })
     return (await ctx.db.get(file._id))!
   },
 })
 
-export const move = mutation({
+export const move = internalMutation({
   args: {
+    ownerTokenIdentifier: v.string(),
     fileId: v.id("files"),
     path: v.string(),
     parentPath: v.string(),
@@ -497,19 +560,24 @@ export const move = mutation({
   },
   returns: fileValidator,
   handler: async (ctx, args) => {
-    const owner = await identity(ctx)
-    const file = await owned(ctx, args.fileId, owner.tokenIdentifier)
+    assertCanonicalPath(args.path, args.parentPath, args.basename)
+    const file = await owned(ctx, args.fileId, args.ownerTokenIdentifier)
     if (file.status !== "ready") throw new ConvexError("INVALID_FILE_STATE")
     const oldParentPath = file.parentPath ?? "/"
-    await assertPathAvailable(ctx, owner.tokenIdentifier, args.path, file._id)
-    await ensureDirectories(ctx, owner.tokenIdentifier, args.parentPath)
+    await assertPathAvailable(
+      ctx,
+      args.ownerTokenIdentifier,
+      args.path,
+      file._id
+    )
+    await ensureDirectories(ctx, args.ownerTokenIdentifier, args.parentPath)
     await ctx.db.patch(file._id, {
       path: args.path,
       parentPath: args.parentPath,
       basename: args.basename,
       originalName: args.basename,
     })
-    const entry = await fileEntry(ctx, owner.tokenIdentifier, file._id)
+    const entry = await fileEntry(ctx, args.ownerTokenIdentifier, file._id)
     if (entry) {
       await ctx.db.patch(entry._id, {
         path: args.path,
@@ -517,59 +585,56 @@ export const move = mutation({
         basename: args.basename,
       })
     }
-    await pruneDirectories(ctx, owner.tokenIdentifier, oldParentPath)
+    await pruneDirectories(ctx, args.ownerTokenIdentifier, oldParentPath)
     return (await ctx.db.get(file._id))!
   },
 })
 
-export const beginDelete = mutation({
-  args: { fileId: v.id("files") },
+export const beginDelete = internalMutation({
+  args: { ownerTokenIdentifier: v.string(), fileId: v.id("files") },
   returns: fileValidator,
   handler: async (ctx, args) => {
-    const owner = await identity(ctx)
-    const file = await owned(ctx, args.fileId, owner.tokenIdentifier)
+    const file = await owned(ctx, args.fileId, args.ownerTokenIdentifier)
     if (file.status !== "ready" && file.status !== "deleting") {
       throw new ConvexError("INVALID_FILE_STATE")
     }
     if (file.status !== "deleting") {
       await ctx.db.patch(file._id, { status: "deleting" })
-      const entry = await fileEntry(ctx, owner.tokenIdentifier, file._id)
+      const entry = await fileEntry(ctx, args.ownerTokenIdentifier, file._id)
       if (entry) await ctx.db.patch(entry._id, { status: "deleting" })
     }
     return (await ctx.db.get(file._id))!
   },
 })
 
-export const completeDelete = mutation({
-  args: { fileId: v.id("files") },
+export const completeDelete = internalMutation({
+  args: { ownerTokenIdentifier: v.string(), fileId: v.id("files") },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const owner = await identity(ctx)
-    const file = await owned(ctx, args.fileId, owner.tokenIdentifier)
+    const file = await owned(ctx, args.fileId, args.ownerTokenIdentifier)
     if (file.status !== "deleting") throw new ConvexError("INVALID_FILE_STATE")
-    const current = await usage(ctx, owner.tokenIdentifier)
+    const current = await usage(ctx, args.ownerTokenIdentifier)
     await ctx.db.patch(current._id, {
       usedBytes: Math.max(0, current.usedBytes - (file.verifiedSize ?? 0)),
     })
     await ctx.db.delete(file._id)
-    const entry = await fileEntry(ctx, owner.tokenIdentifier, file._id)
+    const entry = await fileEntry(ctx, args.ownerTokenIdentifier, file._id)
     if (entry) {
       await ctx.db.delete(entry._id)
-      await pruneDirectories(ctx, owner.tokenIdentifier, entry.parentPath)
+      await pruneDirectories(ctx, args.ownerTokenIdentifier, entry.parentPath)
     }
     return null
   },
 })
 
-export const cancelDelete = mutation({
-  args: { fileId: v.id("files") },
+export const cancelDelete = internalMutation({
+  args: { ownerTokenIdentifier: v.string(), fileId: v.id("files") },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const owner = await identity(ctx)
-    const file = await owned(ctx, args.fileId, owner.tokenIdentifier)
+    const file = await owned(ctx, args.fileId, args.ownerTokenIdentifier)
     if (file.status === "deleting") {
       await ctx.db.patch(file._id, { status: "ready" })
-      const entry = await fileEntry(ctx, owner.tokenIdentifier, file._id)
+      const entry = await fileEntry(ctx, args.ownerTokenIdentifier, file._id)
       if (entry) await ctx.db.patch(entry._id, { status: "ready" })
     }
     return null

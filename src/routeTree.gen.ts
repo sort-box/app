@@ -10,7 +10,9 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiRouteImport } from './routes/api'
 import { Route as ApiFilesRouteImport } from './routes/api.files'
+import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api.openapi[.]json'
 import { Route as SignInSplatRouteImport } from './routes/sign-in.$'
 import { Route as SignUpSplatRouteImport } from './routes/sign-up.$'
 import { Route as ApiFilesFileIdRouteImport } from './routes/api.files.$fileId'
@@ -25,10 +27,20 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiFilesRoute = ApiFilesRouteImport.update({
-  id: '/api/files',
-  path: '/api/files',
+const ApiRoute = ApiRouteImport.update({
+  id: '/api',
+  path: '/api',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ApiFilesRoute = ApiFilesRouteImport.update({
+  id: '/files',
+  path: '/files',
+  getParentRoute: () => ApiRoute,
+} as any)
+const ApiOpenapiDotjsonRoute = ApiOpenapiDotjsonRouteImport.update({
+  id: '/openapi.json',
+  path: '/openapi.json',
+  getParentRoute: () => ApiRoute,
 } as any)
 const SignInSplatRoute = SignInSplatRouteImport.update({
   id: '/sign-in/$',
@@ -73,7 +85,9 @@ const ApiFilesFileIdDownloadRoute = ApiFilesFileIdDownloadRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api': typeof ApiRouteWithChildren
   '/api/files': typeof ApiFilesRouteWithChildren
+  '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
   '/api/files/$fileId': typeof ApiFilesFileIdRouteWithChildren
@@ -85,7 +99,9 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api': typeof ApiRouteWithChildren
   '/api/files': typeof ApiFilesRouteWithChildren
+  '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
   '/api/files/$fileId': typeof ApiFilesFileIdRouteWithChildren
@@ -98,7 +114,9 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api': typeof ApiRouteWithChildren
   '/api/files': typeof ApiFilesRouteWithChildren
+  '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
   '/api/files/$fileId': typeof ApiFilesFileIdRouteWithChildren
@@ -112,7 +130,9 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/api'
     | '/api/files'
+    | '/api/openapi.json'
     | '/sign-in/$'
     | '/sign-up/$'
     | '/api/files/$fileId'
@@ -124,7 +144,9 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/api'
     | '/api/files'
+    | '/api/openapi.json'
     | '/sign-in/$'
     | '/sign-up/$'
     | '/api/files/$fileId'
@@ -136,7 +158,9 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/api'
     | '/api/files'
+    | '/api/openapi.json'
     | '/sign-in/$'
     | '/sign-up/$'
     | '/api/files/$fileId'
@@ -149,7 +173,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  ApiFilesRoute: typeof ApiFilesRouteWithChildren
+  ApiRoute: typeof ApiRouteWithChildren
   SignInSplatRoute: typeof SignInSplatRoute
   SignUpSplatRoute: typeof SignUpSplatRoute
 }
@@ -163,12 +187,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api': {
+      id: '/api'
+      path: '/api'
+      fullPath: '/api'
+      preLoaderRoute: typeof ApiRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/files': {
       id: '/api/files'
-      path: '/api/files'
+      path: '/files'
       fullPath: '/api/files'
       preLoaderRoute: typeof ApiFilesRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof ApiRoute
+    }
+    '/api/openapi.json': {
+      id: '/api/openapi.json'
+      path: '/openapi.json'
+      fullPath: '/api/openapi.json'
+      preLoaderRoute: typeof ApiOpenapiDotjsonRouteImport
+      parentRoute: typeof ApiRoute
     }
     '/sign-in/$': {
       id: '/sign-in/$'
@@ -261,9 +299,21 @@ const ApiFilesRouteWithChildren = ApiFilesRoute._addFileChildren(
   ApiFilesRouteChildren,
 )
 
+interface ApiRouteChildren {
+  ApiFilesRoute: typeof ApiFilesRouteWithChildren
+  ApiOpenapiDotjsonRoute: typeof ApiOpenapiDotjsonRoute
+}
+
+const ApiRouteChildren: ApiRouteChildren = {
+  ApiFilesRoute: ApiFilesRouteWithChildren,
+  ApiOpenapiDotjsonRoute: ApiOpenapiDotjsonRoute,
+}
+
+const ApiRouteWithChildren = ApiRoute._addFileChildren(ApiRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  ApiFilesRoute: ApiFilesRouteWithChildren,
+  ApiRoute: ApiRouteWithChildren,
   SignInSplatRoute: SignInSplatRoute,
   SignUpSplatRoute: SignUpSplatRoute,
 }

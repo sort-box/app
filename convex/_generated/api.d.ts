@@ -13,7 +13,6 @@ import type * as fileCleanup from "../fileCleanup.js";
 import type * as fileMigration from "../fileMigration.js";
 import type * as fileRest from "../fileRest.js";
 import type * as fileTransitions from "../fileTransitions.js";
-import type * as files from "../files.js";
 import type * as http from "../http.js";
 import type * as status from "../status.js";
 
@@ -29,7 +28,6 @@ declare const fullApi: ApiFromModules<{
   fileMigration: typeof fileMigration;
   fileRest: typeof fileRest;
   fileTransitions: typeof fileTransitions;
-  files: typeof files;
   http: typeof http;
   status: typeof status;
 }>;

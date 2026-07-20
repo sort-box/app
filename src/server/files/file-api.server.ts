@@ -4,12 +4,10 @@ import { ConvexHttpClient } from "convex/browser"
 import { ResultAsync } from "neverthrow"
 import type { ZodType } from "zod"
 
-import { api } from "../../../convex/_generated/api"
-import type { Id } from "../../../convex/_generated/dataModel"
+import type { Doc, Id } from "../../../convex/_generated/dataModel"
 import { getObjectStorage } from "../storage/storage.server"
 
 export const MAX_FILE_SIZE = Math.floor(4.995 * 1024 ** 3)
-const QUOTA_BYTES = 10 * 1024 ** 3
 const UPLOAD_EXPIRY_SECONDS = 600
 const DOWNLOAD_EXPIRY_SECONDS = 60
 const MAX_JSON_BYTES = 16 * 1024
@@ -37,6 +35,7 @@ type Success<T> = { ok: true; value: T }
 export type FileApiResult<T> = Success<T> | Failure
 
 export type FileApiContext = {
+  authToken: string
   client: ConvexHttpClient
   requestId: string
   userId: string
@@ -117,7 +116,12 @@ export const fileApiMiddleware = createMiddleware().server(
     client.setAuth(token)
     const result = await next({
       context: {
-        fileApi: { client, requestId, userId } satisfies FileApiContext,
+        fileApi: {
+          authToken: token,
+          client,
+          requestId,
+          userId,
+        } satisfies FileApiContext,
       },
     })
     if (result instanceof Response) {
@@ -270,6 +274,12 @@ function mapFailure(value: unknown): Failure {
     return error("QUOTA_EXCEEDED", "The storage quota would be exceeded.")
   if (message.includes("INVALID_FILE_STATE"))
     return error("INVALID_FILE_STATE", "The file is not in the required state.")
+  if (
+    message.includes("INVALID_INPUT") ||
+    message.includes("UPLOAD_MISMATCH")
+  ) {
+    return error("INVALID_INPUT", "The file operation input is invalid.")
+  }
   if (message.includes("NOT_AUTHENTICATED"))
     return error("NOT_AUTHENTICATED", "Authentication is required.")
   return error("INTERNAL_ERROR", "The file operation failed.")
@@ -283,24 +293,53 @@ function storageFailure(): Failure {
   )
 }
 
-async function convex<T>(promise: Promise<T>): Promise<FileApiResult<T>> {
-  return ResultAsync.fromPromise(promise, mapFailure).match(
-    (value) => ({ ok: true as const, value }),
-    (failure) => failure
-  )
-}
-
 export class FileRestService {
   constructor(private readonly context: FileApiContext) {}
 
-  async rateLimit(bucket: "read" | "mutation" | "upload") {
-    const limit = bucket === "read" ? 60 : bucket === "mutation" ? 20 : 10
-    const result = await convex(
-      this.context.client.mutation(api.fileRest.consumeRateLimit, {
-        bucket,
-        limit,
-      })
+  private async privileged<T>(
+    operation: string,
+    input: Record<string, unknown> = {}
+  ): Promise<FileApiResult<T>> {
+    const siteUrl = import.meta.env.VITE_CONVEX_SITE_URL
+    const serviceSecret = process.env.FILE_SERVICE_SECRET
+    if (!siteUrl || !serviceSecret || serviceSecret.length < 32) {
+      return error(
+        "CONFIGURATION_ERROR",
+        "The trusted file service is not configured."
+      )
+    }
+    return ResultAsync.fromPromise(
+      fetch(`${siteUrl.replace(/\/$/, "")}/internal/files/rest`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.context.authToken}`,
+          "Content-Type": "application/json",
+          "x-file-service-secret": serviceSecret,
+        },
+        body: JSON.stringify({ operation, ...input }),
+      }).then(async (response) => {
+        if (!response.ok) {
+          const body = (await response.json().catch(() => null)) as {
+            code?: unknown
+          } | null
+          throw new Error(
+            typeof body?.code === "string" ? body.code : "TRANSITION_REJECTED"
+          )
+        }
+        return (await response.json()) as T
+      }),
+      mapFailure
+    ).match(
+      (value) => ({ ok: true as const, value }),
+      (failure) => failure
     )
+  }
+
+  async rateLimit(bucket: "read" | "mutation" | "upload") {
+    const result = await this.privileged<{
+      allowed: boolean
+      retryAfter: number
+    }>("consumeRateLimit", { bucket })
     if (!result.ok) return result
     return result.value.allowed
       ? ({ ok: true, value: null } as const)
@@ -319,14 +358,14 @@ export class FileRestService {
   }): Promise<FileApiResult<unknown>> {
     const parsed = parseFilePath(input.path)
     if (!parsed.ok) return parsed
-    const reservation = await convex(
-      this.context.client.mutation(api.fileRest.createUpload, {
-        ...parsed.value,
-        contentType: input.contentType,
-        size: input.size,
-        quota: QUOTA_BYTES,
-      })
-    )
+    const reservation = await this.privileged<{
+      fileId: Id<"files">
+      objectKey: string
+    }>("createUpload", {
+      ...parsed.value,
+      contentType: input.contentType,
+      size: input.size,
+    })
     if (!reservation.ok) return reservation
     const storage = getObjectStorage()
     if (storage.isErr())
@@ -338,12 +377,10 @@ export class FileRestService {
       expiresInSeconds: UPLOAD_EXPIRY_SECONDS,
     })
     if (signed.isErr()) {
-      await this.context.client
-        .mutation(api.fileRest.failPending, {
-          fileId: reservation.value.fileId,
-          failureCode: "SIGNING_FAILED",
-        })
-        .catch(() => undefined)
+      await this.privileged("failPending", {
+        fileId: reservation.value.fileId,
+        failureCode: "SIGNING_FAILED",
+      })
       return storageFailure()
     }
     return {
@@ -356,11 +393,9 @@ export class FileRestService {
   }
 
   async complete(fileId: string): Promise<FileApiResult<unknown>> {
-    const file = await convex(
-      this.context.client.query(api.fileRest.getOwned, {
-        fileId: fileId as Id<"files">,
-      })
-    )
+    const file = await this.privileged<Doc<"files"> | null>("getOwned", {
+      fileId: fileId as Id<"files">,
+    })
     if (!file.ok) return file
     if (!file.value) return error("FILE_NOT_FOUND", "The file was not found.")
     if (file.value.status === "ready") return { ok: true, value: file.value }
@@ -377,28 +412,24 @@ export class FileRestService {
       object.value.contentType !== file.value.declaredContentType
     ) {
       await storage.value.deleteObject({ key: file.value.objectKey })
-      await this.context.client.mutation(api.fileRest.failPending, {
+      await this.privileged("failPending", {
         fileId: file.value._id,
         failureCode: "UPLOAD_MISMATCH",
       })
       return error("INVALID_INPUT", "The uploaded object does not match.")
     }
-    return convex(
-      this.context.client.mutation(api.fileRest.completeUpload, {
-        fileId: file.value._id,
-        verifiedContentType: object.value.contentType!,
-        verifiedSize: object.value.size,
-        etag: object.value.etag,
-      })
-    )
+    return this.privileged("completeUpload", {
+      fileId: file.value._id,
+      verifiedContentType: object.value.contentType!,
+      verifiedSize: object.value.size,
+      etag: object.value.etag,
+    })
   }
 
   async download(fileId: string): Promise<FileApiResult<unknown>> {
-    const file = await convex(
-      this.context.client.query(api.fileRest.getOwned, {
-        fileId: fileId as Id<"files">,
-      })
-    )
+    const file = await this.privileged<Doc<"files"> | null>("getOwned", {
+      fileId: fileId as Id<"files">,
+    })
     if (!file.ok) return file
     if (!file.value) return error("FILE_NOT_FOUND", "The file was not found.")
     if (file.value.status !== "ready") {
@@ -423,36 +454,34 @@ export class FileRestService {
   }): Promise<FileApiResult<unknown>> {
     const path = parseDirectoryPath(input.path)
     if (!path.ok) return path
-    return convex(
-      this.context.client.query(api.fileRest.list, {
-        parentPath: path.value,
-        recursive: input.recursive,
-        paginationOpts: { cursor: input.cursor, numItems: input.limit },
-      })
-    )
+    return this.privileged("list", {
+      parentPath: path.value,
+      recursive: input.recursive,
+      cursor: input.cursor,
+      limit: input.limit,
+    })
   }
 
   async move(fileId: string, destination: string) {
     const path = parseFilePath(destination)
     if (!path.ok) return path
-    return convex(
-      this.context.client.mutation(api.fileRest.move, {
-        fileId: fileId as Id<"files">,
-        ...path.value,
-      })
-    )
+    return this.privileged("move", {
+      fileId: fileId as Id<"files">,
+      ...path.value,
+    })
   }
 
   async copy(fileId: string, destination: string) {
     const path = parseFilePath(destination)
     if (!path.ok) return path
-    const reserved = await convex(
-      this.context.client.mutation(api.fileRest.reserveCopy, {
-        sourceFileId: fileId as Id<"files">,
-        ...path.value,
-        quota: QUOTA_BYTES,
-      })
-    )
+    const reserved = await this.privileged<{
+      fileId: Id<"files">
+      sourceObjectKey: string
+      destinationObjectKey: string
+    }>("reserveCopy", {
+      sourceFileId: fileId as Id<"files">,
+      ...path.value,
+    })
     if (!reserved.ok) return reserved
     const storage = getObjectStorage()
     if (storage.isErr())
@@ -462,31 +491,26 @@ export class FileRestService {
       destinationKey: reserved.value.destinationObjectKey,
     })
     if (copied.isErr()) {
-      await this.context.client
-        .mutation(api.fileRest.failPending, {
-          fileId: reserved.value.fileId,
-          failureCode: "COPY_FAILED",
-        })
-        .catch(() => undefined)
+      await this.privileged("failPending", {
+        fileId: reserved.value.fileId,
+        failureCode: "COPY_FAILED",
+      })
       return storageFailure()
     }
-    return convex(
-      this.context.client.mutation(api.fileRest.completeCopy, {
-        fileId: reserved.value.fileId,
-        verifiedContentType:
-          copied.value.contentType ?? "application/octet-stream",
-        verifiedSize: copied.value.size,
-        etag: copied.value.etag,
-      })
-    )
+    return this.privileged("completeCopy", {
+      fileId: reserved.value.fileId,
+      verifiedContentType:
+        copied.value.contentType ?? "application/octet-stream",
+      verifiedSize: copied.value.size,
+      etag: copied.value.etag,
+    })
   }
 
   async delete(fileId: string): Promise<FileApiResult<null>> {
-    const begun = await convex(
-      this.context.client.mutation(api.fileRest.beginDelete, {
-        fileId: fileId as Id<"files">,
-      })
-    )
+    const begun = await this.privileged<{
+      _id: Id<"files">
+      objectKey: string
+    }>("beginDelete", { fileId: fileId as Id<"files"> })
     if (!begun.ok) return begun
     const storage = getObjectStorage()
     if (storage.isErr())
@@ -495,16 +519,12 @@ export class FileRestService {
       key: begun.value.objectKey,
     })
     if (deleted.isErr()) {
-      await this.context.client
-        .mutation(api.fileRest.cancelDelete, { fileId: begun.value._id })
-        .catch(() => undefined)
+      await this.privileged("cancelDelete", { fileId: begun.value._id })
       return storageFailure()
     }
-    const completed = await convex(
-      this.context.client.mutation(api.fileRest.completeDelete, {
-        fileId: begun.value._id,
-      })
-    )
+    const completed = await this.privileged<null>("completeDelete", {
+      fileId: begun.value._id,
+    })
     return completed.ok ? { ok: true, value: null } : completed
   }
 }

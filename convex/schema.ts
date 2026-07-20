@@ -64,6 +64,7 @@ export default defineSchema({
     status: fileStatus,
   })
     .index("by_owner_path", ["ownerTokenIdentifier", "path"])
+    .index("by_owner_fileId", ["ownerTokenIdentifier", "fileId"])
     .index("by_owner_parent_status_path", [
       "ownerTokenIdentifier",
       "parentPath",
