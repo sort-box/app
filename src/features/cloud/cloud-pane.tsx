@@ -1,4 +1,4 @@
-import { useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   useInfiniteQuery,
   useMutation,
@@ -107,10 +107,54 @@ export function CloudPane() {
     queryClient.invalidateQueries({ queryKey: ["cloud", "files"] })
 
   const directory = useDirectory(path)
+  const scrollContainer = useRef<HTMLDivElement>(null)
+  const nextPageRequestPending = useRef(false)
   const entries = sortEntries(
     directory.data?.pages.flatMap((page) => page.page) ?? []
   ).filter((entry) => !pendingDeleteIds.has(entry._id))
   const segments = path === "/" ? [] : path.slice(1).split("/")
+  const retryNextPage = () => {
+    void directory.fetchNextPage()
+  }
+
+  const loadNextPageIfNeeded = useCallback(() => {
+    const viewport = scrollContainer.current
+    if (
+      !viewport ||
+      viewport.clientHeight === 0 ||
+      !directory.hasNextPage ||
+      directory.isFetchNextPageError ||
+      directory.isFetchingNextPage ||
+      nextPageRequestPending.current
+    ) {
+      return
+    }
+    const remaining =
+      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+    if (remaining > 200) return
+
+    nextPageRequestPending.current = true
+    void directory.fetchNextPage()
+  }, [
+    directory.fetchNextPage,
+    directory.hasNextPage,
+    directory.isFetchNextPageError,
+    directory.isFetchingNextPage,
+  ])
+
+  useEffect(() => {
+    if (!directory.isFetchingNextPage) {
+      nextPageRequestPending.current = false
+    }
+    loadNextPageIfNeeded()
+    window.addEventListener("resize", loadNextPageIfNeeded)
+    return () => window.removeEventListener("resize", loadNextPageIfNeeded)
+  }, [entries.length, directory.isFetchingNextPage, loadNextPageIfNeeded])
+
+  useEffect(() => {
+    nextPageRequestPending.current = false
+    if (scrollContainer.current) scrollContainer.current.scrollTop = 0
+  }, [path])
 
   const renameMutation = useMutation({
     mutationFn: ({ entry, name }: { entry: FileEntry; name: string }) =>
@@ -245,7 +289,7 @@ export function CloudPane() {
 
   return (
     <div
-      className="relative flex h-full flex-col"
+      className="relative flex h-svh max-h-svh min-h-0 flex-col overflow-hidden"
       onDragEnter={(event) => {
         if (!hasDraggedFiles(event.dataTransfer)) return
         event.preventDefault()
@@ -341,8 +385,13 @@ export function CloudPane() {
         </header>
       )}
 
-      <div className="flex-1 overflow-y-auto">
-        {directory.isError ? (
+      <div
+        ref={scrollContainer}
+        data-testid="cloud-scroll"
+        className="min-h-0 flex-1 overflow-y-scroll overscroll-contain"
+        onScroll={loadNextPageIfNeeded}
+      >
+        {directory.isError && !directory.data ? (
           <div className="grid h-full place-items-center">
             <div className="space-y-3 text-center">
               <p className="text-sm text-muted-foreground">
@@ -480,19 +529,21 @@ export function CloudPane() {
                 )}
               </TableBody>
             </Table>
-            {directory.hasNextPage && (
-              <div className="flex justify-center py-3">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={directory.isFetchingNextPage}
-                  onClick={() => directory.fetchNextPage()}
-                >
-                  {directory.isFetchingNextPage && (
-                    <Loader2Icon className="animate-spin" />
-                  )}
-                  Load more
-                </Button>
+            {(directory.hasNextPage || directory.isFetchNextPageError) && (
+              <div className="flex min-h-12 items-center justify-center py-3">
+                {directory.isFetchNextPageError ? (
+                  <Button variant="ghost" size="sm" onClick={retryNextPage}>
+                    Try loading more again
+                  </Button>
+                ) : directory.isFetchingNextPage ? (
+                  <span
+                    role="status"
+                    className="flex items-center gap-2 text-sm text-muted-foreground"
+                  >
+                    <Loader2Icon className="size-4 animate-spin" />
+                    Loading more…
+                  </span>
+                ) : null}
               </div>
             )}
           </>

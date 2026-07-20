@@ -152,7 +152,7 @@ function Shell({
           </div>
         </ResizablePanel>
         <ResizableHandle withHandle />
-        <ResizablePanel>
+        <ResizablePanel className="overflow-hidden!">
           {renderSection?.(activeSection) ?? (
             <main className="grid h-full place-items-center text-sm text-muted-foreground">
               {active?.label}
