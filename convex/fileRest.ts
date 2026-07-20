@@ -11,9 +11,9 @@ import {
   type MutationCtx,
 } from "./_generated/server"
 import {
-  assertRetryableEmbedding,
   deleteFileEmbedding,
   queueFileEmbedding,
+  shouldRestartEmbedding,
 } from "./documentEmbedding"
 import { embeddingErrorCode, embeddingStatus, fileStatus } from "./schema"
 
@@ -633,6 +633,8 @@ export const completeCopy = internalMutation({
     })
     const entry = await fileEntry(ctx, args.ownerTokenIdentifier, file._id)
     if (entry) await ctx.db.patch(entry._id, { status: "ready" })
+    // Copies have independent file keys and therefore independent RAG entries;
+    // identical source content is intentionally embedded once per copy.
     await queueFileEmbedding(ctx, (await ctx.db.get(file._id))!)
     return (await ctx.db.get(file._id))!
   },
@@ -643,7 +645,8 @@ export const retryEmbedding = internalMutation({
   returns: fileValidator,
   handler: async (ctx, args) => {
     const file = await owned(ctx, args.fileId, args.ownerTokenIdentifier)
-    if (assertRetryableEmbedding(file)) {
+    if (shouldRestartEmbedding(file)) {
+      await deleteFileEmbedding(ctx, file.embeddingEntryId)
       await queueFileEmbedding(ctx, file)
     }
     return (await ctx.db.get(file._id))!

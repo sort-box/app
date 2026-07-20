@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { createVoyageDocumentEmbeddingModel } from "./voyage-embedding-model.server"
+import {
+  createVoyageDocumentEmbeddingModel,
+  createVoyageQueryEmbeddingModel,
+} from "./voyage-embedding-model.server"
 import type { VoyageEmbeddingModelError } from "./voyage-embedding-model.server"
 
 afterEach(() => {
@@ -56,5 +59,29 @@ describe("Voyage document embedding model", () => {
       retryable: false,
     } satisfies Partial<VoyageEmbeddingModelError>)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("uses Voyage query input mode for RAG searches", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async (_input, init) => {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          input: ["search terms"],
+          input_type: "query",
+          output_dimension: 1_024,
+        })
+        return Response.json({
+          data: [
+            { index: 0, embedding: Array.from({ length: 1_024 }, () => 0.01) },
+          ],
+        })
+      })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const model = createVoyageQueryEmbeddingModel("test-key")
+    const result = await model.doEmbed({ values: ["search terms"] })
+
+    expect(model.modelId).toBe("voyage-4-large:document:1024")
+    expect(result.embeddings).toHaveLength(1)
   })
 })

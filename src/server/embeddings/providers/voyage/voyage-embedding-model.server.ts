@@ -43,6 +43,19 @@ function wait(milliseconds: number): Promise<void> {
 export function createVoyageDocumentEmbeddingModel(
   apiKey: string
 ): VoyageDocumentEmbeddingModel {
+  return createVoyageEmbeddingModel(apiKey, "document")
+}
+
+export function createVoyageQueryEmbeddingModel(
+  apiKey: string
+): VoyageDocumentEmbeddingModel {
+  return createVoyageEmbeddingModel(apiKey, "query")
+}
+
+function createVoyageEmbeddingModel(
+  apiKey: string,
+  inputType: "document" | "query"
+): VoyageDocumentEmbeddingModel {
   const adapter = new VoyageSearchAdapter(
     apiKey,
     globalThis.fetch,
@@ -56,8 +69,16 @@ export function createVoyageDocumentEmbeddingModel(
     maxEmbeddingsPerCall: VOYAGE_DOCUMENT_BATCH_SIZE,
     supportsParallelCalls: false,
     async doEmbed({ values }) {
+      if (inputType === "query" && values.length !== 1) {
+        throw new VoyageEmbeddingModelError("INVALID_INPUT", false)
+      }
       for (let attempt = 0; attempt < MAX_PROVIDER_ATTEMPTS; attempt += 1) {
-        const result = await adapter.embedDocuments(values)
+        const result =
+          inputType === "document"
+            ? await adapter.embedDocuments(values)
+            : (await adapter.embedQuery(values[0])).map((embedding) => [
+                embedding,
+              ])
         if (result.isOk()) {
           return {
             embeddings: result.value.map((embedding) => [...embedding]),
@@ -70,7 +91,7 @@ export function createVoyageDocumentEmbeddingModel(
           throw new VoyageEmbeddingModelError(result.error.code, canRetry)
         }
         const delay = backoffMs(attempt)
-        console.warn("Retrying document embedding provider request.", {
+        console.warn("Retrying embedding provider request.", {
           attempt: attempt + 1,
           code: result.error.code,
           delay,

@@ -47,6 +47,7 @@ vi.mock("../src/server/storage/storage.server", () => ({
   }),
 }))
 
+// Keep optional component test exports out of Vite's static import resolution.
 const ragTestModule = "@convex-dev/rag/" + "test"
 const { default: ragTest } = (await import(ragTestModule)) as {
   default: { register: (test: ReturnType<typeof convexTest>) => void }
@@ -657,7 +658,7 @@ describe("document embedding lifecycle", () => {
     expect(completed.embeddingEntryId).toBeUndefined()
   })
 
-  it("retries a failed embedding idempotently", async () => {
+  it("restarts failed and stalled embeddings", async () => {
     const { completed, created, t } = await completeTextUpload()
     await t.run(async (ctx) => {
       await ctx.db.patch(created.fileId, {
@@ -677,7 +678,51 @@ describe("document embedding lifecycle", () => {
 
     expect(retried.embeddingStatus).toBe("queued")
     expect(retried.embeddingEntryId).not.toBe(completed.embeddingEntryId)
-    expect(repeated.embeddingEntryId).toBe(retried.embeddingEntryId)
+    expect(repeated.embeddingEntryId).not.toBe(retried.embeddingEntryId)
+  })
+
+  it("deletes a file whose embedding previously failed", async () => {
+    const { completed, created, t } = await completeTextUpload()
+    const entry = await t.query(components.rag.entries.get, {
+      entryId: completed.embeddingEntryId!,
+    })
+    const namespace = await t.query(components.rag.namespaces.get, {
+      namespace: owner.ownerTokenIdentifier,
+      modelId: "voyage-4-large:document:1024",
+      dimension: 1_024,
+      filterNames: [],
+    })
+
+    await t.mutation(internal.documentEmbedding.completeEmbedding, {
+      namespace: namespace! as never,
+      entry: entry! as never,
+      error: "NO_TEXT",
+    })
+    const failed = await t.query(internal.fileRest.getOwned, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      fileId: created.fileId,
+    })
+    expect(failed).toMatchObject({
+      embeddingStatus: "failed",
+      embeddingErrorCode: "NO_TEXT",
+    })
+    expect(failed?.embeddingEntryId).toBeUndefined()
+
+    await t.mutation(internal.fileRest.beginDelete, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      fileId: created.fileId,
+    })
+    await t.mutation(internal.fileRest.completeDelete, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      fileId: created.fileId,
+    })
+
+    expect(
+      await t.query(internal.fileRest.getOwned, {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+        fileId: created.fileId,
+      })
+    ).toBeNull()
   })
 
   it("does not re-embed a moved file", async () => {

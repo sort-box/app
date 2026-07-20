@@ -119,3 +119,19 @@ bunx convex run documentEmbedding:verifyEmbeddingBackfill
 Only after verification reports `complete: true` should a follow-up deployment
 make `embeddingStatus` required and remove the temporary `not_indexed` fallback.
 The initial backfill does not require a cron job.
+
+## Document embedding operational notes
+
+- The 100 MB source limit matches the largest object the ingestion contract
+  accepts. Extraction buffers the source in a Node action, so documents near
+  that ceiling can still fail with `EMBEDDING_FAILED` if they exceed Convex's
+  memory or 10-minute action limits; operators should retry or reduce the file.
+- A manual retry restarts `queued`, `extracting`, and `embedding` work as well
+  as failed work, providing recovery when a workpool job is lost.
+- Directory listings perform a bounded file lookup for each entry in the page
+  to attach embedding state. Keep page sizes bounded if that state remains in
+  the listing response.
+- Moving or renaming a file does not re-embed it, so its internal RAG title can
+  retain the previous basename. The title is not currently user-visible.
+- Copying a file creates a per-file RAG entry and re-embeds identical content;
+  indexing cost therefore grows linearly with copies.

@@ -152,6 +152,7 @@ export const completeEmbedding = documentRag.defineOnComplete<DataModel>(
     } else if (error) {
       await ctx.db.patch(file._id, {
         embeddingStatus: "failed",
+        embeddingEntryId: undefined,
         embeddingErrorCode: safeErrorCode(error),
         embeddingUpdatedAt: Date.now(),
       })
@@ -178,9 +179,19 @@ export async function deleteFileEmbedding(
   entryId: string | undefined
 ) {
   if (entryId) {
-    await documentRag.deleteAsync(ctx, {
-      entryId: entryId as EntryId,
-    })
+    try {
+      await documentRag.deleteAsync(ctx, {
+        entryId: entryId as EntryId,
+      })
+    } catch (cause) {
+      // RAG deletion is not idempotent. Treat an already-removed entry as the
+      // desired state so stale callbacks and file deletion can safely retry.
+      if (!(
+        cause instanceof Error && /Entry .* not found/u.test(cause.message)
+      )) {
+        throw cause
+      }
+    }
   }
 }
 
@@ -191,6 +202,8 @@ export const verifyEmbeddingBackfill = internalQuery({
     sampleRemaining: v.array(v.id("files")),
   }),
   handler: async (ctx) => {
+    // This full scan is intentionally a temporary, manually invoked rollout
+    // verification. Do not schedule it as a cron after the backfill completes.
     const remaining = await ctx.db
       .query("files")
       .filter((q) => q.eq(q.field("embeddingStatus"), undefined))
@@ -202,7 +215,7 @@ export const verifyEmbeddingBackfill = internalQuery({
   },
 })
 
-export function assertRetryableEmbedding(file: Doc<"files">) {
+export function shouldRestartEmbedding(file: Doc<"files">) {
   if (file.status !== "ready") {
     throw new ConvexError("INVALID_FILE_STATE")
   }
@@ -212,7 +225,7 @@ export function assertRetryableEmbedding(file: Doc<"files">) {
     file.embeddingStatus === "embedding" ||
     file.embeddingStatus === "ready"
   ) {
-    return false
+    return file.embeddingStatus !== "ready"
   }
   if (file.embeddingStatus !== "failed") {
     throw new ConvexError("INVALID_FILE_STATE")
