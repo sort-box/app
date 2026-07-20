@@ -22,6 +22,18 @@ import {
 import type { DataModel } from "./dataModel.js";
 
 /**
+ * Typesafe environment variables declared in `convex.config.ts`.
+ */
+type Env = {
+  readonly CLOUDFLARE_ACCESS_KEY_ID: string;
+  readonly CLOUDFLARE_R2_BUCKET_NAME: string;
+  readonly CLOUDFLARE_R2_EUROPE_ENDPOINT: string;
+  readonly CLOUDFLARE_SECRET_ACCESS_KEY: string;
+  readonly FILE_SERVICE_SECRET: string;
+  readonly VOYAGE_API_KEY: string;
+};
+
+/**
  * Define a query in this Convex app's public API.
  *
  * This function will be allowed to read your Convex database and will be accessible from the client.
@@ -94,6 +106,11 @@ export declare const internalAction: ActionBuilder<DataModel, "internal">;
  * @returns The wrapped function. Import this function from `convex/http.js` and route it to hook it up.
  */
 export declare const httpAction: HttpActionBuilder;
+
+/**
+ * Typesafe environment variables declared in `convex.config.ts`.
+ */
+export declare const env: Env;
 
 /**
  * A set of services for use within Convex query functions.
