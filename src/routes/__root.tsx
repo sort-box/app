@@ -15,6 +15,7 @@ import type { QueryClient } from "@tanstack/react-query"
 import type { ConvexQueryClient } from "@convex-dev/react-query"
 import { ConvexProviderWithClerk } from "convex/react-clerk"
 import type { ConvexReactClient } from "convex/react"
+import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 
 import appCss from "../styles.css?url"
@@ -92,6 +93,7 @@ function RootComponent() {
       <ConvexProviderWithClerk client={convexClient} useAuth={useAuth}>
         <TooltipProvider>
           <Outlet />
+          <Toaster />
         </TooltipProvider>
       </ConvexProviderWithClerk>
     </ClerkProvider>
