@@ -4,6 +4,8 @@ dist
 dist-ssr
 *.local
 .env*
+!.env.example
+!.env.example.convex
 .tanstack
 .wrangler
 .output

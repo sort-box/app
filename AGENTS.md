@@ -162,6 +162,14 @@ tanstackIntent:
 
 # Project Architecture
 
+## Environment Variable Documentation
+
+Whenever a new application environment variable is introduced, add it with an
+empty example value and a concise comment to `.env.example`. Whenever a new
+Convex deployment environment variable is introduced, document it in
+`.env.example.convex`. Never place real secrets or deployment-specific values
+in either example file.
+
 Use Ports and Adapters (hexagonal architecture) for backend and integration
 code. Keep the dependency direction pointing inward: transport and provider
 adapters may depend on application and domain code, but application and domain
