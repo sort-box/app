@@ -198,6 +198,26 @@ export const openApiDocument = {
         },
       },
     },
+    "/api/files/{fileId}/embeddings/retry": {
+      post: {
+        tags: ["Files"],
+        operationId: "retryFileEmbedding",
+        summary: "Retry document embedding",
+        description:
+          "Queues embedding again for a ready file whose previous ingestion failed.",
+        security: [{ clerkSession: [] }],
+        parameters: [fileIdParameter],
+        responses: {
+          "200": dataResponse(
+            { $ref: "#/components/schemas/File" },
+            "The file with its updated embedding state."
+          ),
+          "404": errorResponse,
+          "409": errorResponse,
+          ...authenticatedErrors,
+        },
+      },
+    },
     "/api/files/{fileId}/download": {
       get: {
         tags: ["Files"],
@@ -789,6 +809,9 @@ export const openApiDocument = {
             fileId: { type: "string" },
             failureCode: { type: "string" },
           }),
+          trustedOperation("retryEmbedding", ["fileId"], {
+            fileId: { type: "string" },
+          }),
           trustedOperation(
             "reserveCopy",
             ["sourceFileId", "path", "parentPath", "basename"],
@@ -879,6 +902,33 @@ export const openApiDocument = {
           basename: { type: "string" },
           operation: { type: "string", enum: ["upload", "copy"] },
           usageBackfilledAt: { type: "number" },
+          embeddingStatus: {
+            type: "string",
+            enum: [
+              "not_indexed",
+              "queued",
+              "extracting",
+              "embedding",
+              "ready",
+              "failed",
+              "unsupported",
+            ],
+          },
+          embeddingEntryId: { type: "string" },
+          embeddingVersion: { type: "string" },
+          embeddingErrorCode: {
+            type: "string",
+            enum: [
+              "UNSUPPORTED_TYPE",
+              "OCR_REQUIRED",
+              "TOO_LARGE",
+              "NO_TEXT",
+              "ENCRYPTED",
+              "EXTRACTION_FAILED",
+              "EMBEDDING_FAILED",
+            ],
+          },
+          embeddingUpdatedAt: { type: "number" },
         },
       },
       InternalFilePage: {
@@ -951,6 +1001,7 @@ export const openApiDocument = {
           "size",
           "status",
           "completedAt",
+          "embedding",
         ],
         properties: {
           id: { type: "string" },
@@ -963,6 +1014,7 @@ export const openApiDocument = {
           etag: { type: "string" },
           status: { type: "string", const: "ready" },
           completedAt: { type: "number" },
+          embedding: { $ref: "#/components/schemas/EmbeddingState" },
         },
       },
       FileEntry: {
@@ -988,6 +1040,40 @@ export const openApiDocument = {
             type: "string",
             enum: ["pending", "ready", "deleting", "failed"],
           },
+          embedding: { $ref: "#/components/schemas/EmbeddingState" },
+        },
+      },
+      EmbeddingState: {
+        type: "object",
+        additionalProperties: false,
+        required: ["status"],
+        properties: {
+          status: {
+            type: "string",
+            enum: [
+              "not_indexed",
+              "queued",
+              "extracting",
+              "embedding",
+              "ready",
+              "failed",
+              "unsupported",
+            ],
+          },
+          version: { type: "string" },
+          errorCode: {
+            type: "string",
+            enum: [
+              "UNSUPPORTED_TYPE",
+              "OCR_REQUIRED",
+              "TOO_LARGE",
+              "NO_TEXT",
+              "ENCRYPTED",
+              "EXTRACTION_FAILED",
+              "EMBEDDING_FAILED",
+            ],
+          },
+          updatedAt: { type: "number" },
         },
       },
       FilePage: {

@@ -15,6 +15,7 @@ const VOYAGE_API_URL = "https://api.voyageai.com/v1"
 const EMBEDDING_MODEL = "voyage-4-large"
 const RERANKING_MODEL = "rerank-2.5"
 const MAX_BATCH_SIZE = 1_000
+const DEFAULT_EMBEDDING_DIMENSION = 1_024
 
 type VoyageError = EmbeddingError | RerankingError
 type Fetch = typeof fetch
@@ -58,8 +59,17 @@ function invalidTexts(texts: readonly string[]): boolean {
 export class VoyageSearchAdapter implements EmbeddingPort, RerankingPort {
   constructor(
     private readonly apiKey: string,
-    private readonly fetch: Fetch = globalThis.fetch
-  ) {}
+    private readonly fetch: Fetch = globalThis.fetch,
+    private readonly embeddingDimension = DEFAULT_EMBEDDING_DIMENSION
+  ) {
+    if (
+      !Number.isInteger(embeddingDimension) ||
+      embeddingDimension < 1 ||
+      embeddingDimension > 2_048
+    ) {
+      throw new RangeError("Invalid embedding dimension.")
+    }
+  }
 
   embedDocuments(texts: readonly string[]) {
     if (invalidTexts(texts)) {
@@ -151,6 +161,7 @@ export class VoyageSearchAdapter implements EmbeddingPort, RerankingPort {
       input: texts,
       model: EMBEDDING_MODEL,
       input_type: inputType,
+      output_dimension: this.embeddingDimension,
     }).andThen((body) => {
       if (!isRecord(body) || !Array.isArray(body.data)) {
         return errAsync<readonly EmbeddingVector[], EmbeddingError>({
@@ -168,7 +179,7 @@ export class VoyageSearchAdapter implements EmbeddingPort, RerankingPort {
           (item.index as number) >= texts.length ||
           seen.has(item.index as number) ||
           !Array.isArray(item.embedding) ||
-          item.embedding.length === 0 ||
+          item.embedding.length !== this.embeddingDimension ||
           !item.embedding.every(isFiniteNumber)
         ) {
           return errAsync<readonly EmbeddingVector[], EmbeddingError>({

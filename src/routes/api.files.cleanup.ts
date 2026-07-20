@@ -1,29 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router"
 
+import { fileServiceAuthorized } from "@/server/files/file-service-auth.server"
 import { getObjectStorage } from "@/server/storage/storage.server"
 
 const MAX_CLEANUP_BATCH = 100
 const INCOMPLETE_UPLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1_000
-
-async function sha256(value: string): Promise<Uint8Array> {
-  return new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))
-  )
-}
-
-async function authorized(request: Request, configured: string) {
-  const presented = request.headers.get("x-file-service-secret")
-  if (configured.length < 32 || !presented) return false
-  const [configuredDigest, presentedDigest] = await Promise.all([
-    sha256(configured),
-    sha256(presented),
-  ])
-  let difference = 0
-  for (let index = 0; index < configuredDigest.length; index += 1) {
-    difference |= configuredDigest[index] ^ presentedDigest[index]
-  }
-  return difference === 0
-}
 
 async function convexCleanupRequest<T>(
   siteUrl: string,
@@ -54,7 +35,7 @@ export const Route = createFileRoute("/api/files/cleanup")({
         if (
           !serviceSecret ||
           !siteUrl ||
-          !(await authorized(request, serviceSecret))
+          !(await fileServiceAuthorized(request, serviceSecret))
         ) {
           return new Response("Unauthorized", { status: 401 })
         }

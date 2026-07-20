@@ -311,6 +311,28 @@ export type PublicFile = {
   etag?: string
   status: "ready"
   completedAt: number
+  embedding: PublicEmbeddingState
+}
+
+export type PublicEmbeddingState = {
+  status:
+    | "not_indexed"
+    | "queued"
+    | "extracting"
+    | "embedding"
+    | "ready"
+    | "failed"
+    | "unsupported"
+  version?: string
+  errorCode?:
+    | "UNSUPPORTED_TYPE"
+    | "OCR_REQUIRED"
+    | "TOO_LARGE"
+    | "NO_TEXT"
+    | "ENCRYPTED"
+    | "EXTRACTION_FAILED"
+    | "EMBEDDING_FAILED"
+  updatedAt?: number
 }
 
 export type PublicFileEntry = {
@@ -322,9 +344,31 @@ export type PublicFileEntry = {
   kind: "file" | "directory"
   fileId?: string
   status: "ready"
+  embedding?: PublicEmbeddingState
 }
 
-export function toPublicFileEntry(entry: Doc<"fileEntries">): PublicFileEntry {
+type ListedFileEntry = Doc<"fileEntries"> & {
+  embeddingStatus?: PublicEmbeddingState["status"]
+  embeddingVersion?: string
+  embeddingErrorCode?: PublicEmbeddingState["errorCode"]
+  embeddingUpdatedAt?: number
+}
+
+function publicEmbedding(file: {
+  embeddingStatus?: PublicEmbeddingState["status"]
+  embeddingVersion?: string
+  embeddingErrorCode?: PublicEmbeddingState["errorCode"]
+  embeddingUpdatedAt?: number
+}): PublicEmbeddingState {
+  return {
+    status: file.embeddingStatus ?? "not_indexed",
+    ...(file.embeddingVersion ? { version: file.embeddingVersion } : {}),
+    ...(file.embeddingErrorCode ? { errorCode: file.embeddingErrorCode } : {}),
+    ...(file.embeddingUpdatedAt ? { updatedAt: file.embeddingUpdatedAt } : {}),
+  }
+}
+
+export function toPublicFileEntry(entry: ListedFileEntry): PublicFileEntry {
   return {
     _id: entry._id,
     _creationTime: entry._creationTime,
@@ -334,6 +378,7 @@ export function toPublicFileEntry(entry: Doc<"fileEntries">): PublicFileEntry {
     kind: entry.kind,
     fileId: entry.fileId,
     status: "ready",
+    ...(entry.kind === "file" ? { embedding: publicEmbedding(entry) } : {}),
   }
 }
 
@@ -350,6 +395,7 @@ export function toPublicFile(file: Doc<"files">): PublicFile {
     etag: file.etag,
     status: "ready",
     completedAt: file.completedAt ?? file._creationTime,
+    embedding: publicEmbedding(file),
   }
 }
 
@@ -551,6 +597,15 @@ export class FileRestService {
       ...path.value,
     })
     return moved.ok ? { ok: true, value: toPublicFile(moved.value) } : moved
+  }
+
+  async retryEmbedding(fileId: string): Promise<FileApiResult<PublicFile>> {
+    const retried = await this.privileged<Doc<"files">>("retryEmbedding", {
+      fileId: fileId as Id<"files">,
+    })
+    return retried.ok
+      ? { ok: true, value: toPublicFile(retried.value) }
+      : retried
   }
 
   async createFolder(path: string): Promise<FileApiResult<PublicFileEntry>> {

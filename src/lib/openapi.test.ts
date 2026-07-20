@@ -78,6 +78,7 @@ describe("OpenAPI document", () => {
       "completeUpload",
       "completeCopy",
       "failPending",
+      "retryEmbedding",
       "reserveCopy",
       "move",
       "beginDelete",
