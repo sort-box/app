@@ -33,11 +33,42 @@ VITE_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL=/
 CONVEX_DEPLOYMENT=
 VITE_CONVEX_URL=
 VITE_CONVEX_SITE_URL=
+FILE_API_ORIGIN=http://localhost:3000
 ```
 
 The Convex development deployment also has
 `CLERK_JWT_ISSUER_DOMAIN` configured. Clerk session tokens include the
 `aud: "convex"` claim required by `convex/auth.config.ts`.
+
+### Private file API and R2 CORS
+
+The `/api/files` REST endpoints accept authenticated, same-origin browser
+requests only. Keep the R2 bucket private. Browser transfers use short-lived
+presigned URLs, so configure the bucket CORS policy for the exact application
+origin:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://app.example.com"],
+    "AllowedMethods": ["GET", "PUT", "HEAD"],
+    "AllowedHeaders": ["Content-Type", "Content-Length"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+Do not use `*` for `AllowedOrigins` in production.
+
+After deploying the widened Convex schema, backfill legacy file paths, directory
+entries, and usage ledgers with:
+
+```bash
+bunx convex run fileMigration:backfillFiles
+```
+
+The migration processes resumable batches and can safely be invoked again.
 
 ## Checks
 

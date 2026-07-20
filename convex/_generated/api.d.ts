@@ -8,27 +8,31 @@
  * @module
  */
 
-import type * as crons from "../crons.js"
-import type * as fileCleanup from "../fileCleanup.js"
-import type * as fileTransitions from "../fileTransitions.js"
-import type * as files from "../files.js"
-import type * as http from "../http.js"
-import type * as status from "../status.js"
+import type * as crons from "../crons.js";
+import type * as fileCleanup from "../fileCleanup.js";
+import type * as fileMigration from "../fileMigration.js";
+import type * as fileRest from "../fileRest.js";
+import type * as fileTransitions from "../fileTransitions.js";
+import type * as files from "../files.js";
+import type * as http from "../http.js";
+import type * as status from "../status.js";
 
 import type {
   ApiFromModules,
   FilterApi,
   FunctionReference,
-} from "convex/server"
+} from "convex/server";
 
 declare const fullApi: ApiFromModules<{
-  crons: typeof crons
-  fileCleanup: typeof fileCleanup
-  fileTransitions: typeof fileTransitions
-  files: typeof files
-  http: typeof http
-  status: typeof status
-}>
+  crons: typeof crons;
+  fileCleanup: typeof fileCleanup;
+  fileMigration: typeof fileMigration;
+  fileRest: typeof fileRest;
+  fileTransitions: typeof fileTransitions;
+  files: typeof files;
+  http: typeof http;
+  status: typeof status;
+}>;
 
 /**
  * A utility for referencing Convex functions in your app's public API.
@@ -41,7 +45,7 @@ declare const fullApi: ApiFromModules<{
 export declare const api: FilterApi<
   typeof fullApi,
   FunctionReference<any, "public">
->
+>;
 
 /**
  * A utility for referencing Convex functions in your app's internal API.
@@ -54,6 +58,6 @@ export declare const api: FilterApi<
 export declare const internal: FilterApi<
   typeof fullApi,
   FunctionReference<any, "internal">
->
+>;
 
-export declare const components: {}
+export declare const components: {};

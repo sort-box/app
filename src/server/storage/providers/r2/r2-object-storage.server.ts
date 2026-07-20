@@ -421,6 +421,7 @@ export class R2ObjectStorage implements ObjectStorage, ObjectStorageSigner {
   signPut(input: {
     key: string
     contentType: string
+    contentLength?: number
     expiresInSeconds?: number
   }) {
     return this.sign(
@@ -428,9 +429,15 @@ export class R2ObjectStorage implements ObjectStorage, ObjectStorageSigner {
         Bucket: this.bucket,
         Key: input.key,
         ContentType: input.contentType,
+        ContentLength: input.contentLength,
       }),
       input.expiresInSeconds,
-      { "Content-Type": input.contentType },
+      {
+        "Content-Type": input.contentType,
+        ...(input.contentLength === undefined
+          ? {}
+          : { "Content-Length": String(input.contentLength) }),
+      },
       input.key
     )
   }

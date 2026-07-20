@@ -110,6 +110,14 @@ export const discardIncomplete = internalMutation({
     if (file.status !== "pending" && file.status !== "failed") {
       throw new ConvexError("Invalid file state")
     }
+    const entry = await ctx.db
+      .query("fileEntries")
+      .withIndex("by_owner_path", (q) =>
+        q.eq("ownerTokenIdentifier", file.ownerTokenIdentifier)
+      )
+      .filter((q) => q.eq(q.field("fileId"), file._id))
+      .first()
+    if (entry) await ctx.db.delete(entry._id)
     await ctx.db.delete("files", args.fileId)
   },
 })
@@ -156,6 +164,27 @@ export const completeCleanup = internalMutation({
     ) {
       throw new ConvexError("Invalid cleanup candidate")
     }
+    if (file.status === "pending") {
+      const usage = await ctx.db
+        .query("fileUsage")
+        .withIndex("by_owner", (q) =>
+          q.eq("ownerTokenIdentifier", file.ownerTokenIdentifier)
+        )
+        .unique()
+      if (usage) {
+        await ctx.db.patch(usage._id, {
+          reservedBytes: Math.max(0, usage.reservedBytes - file.declaredSize),
+        })
+      }
+    }
+    const entry = await ctx.db
+      .query("fileEntries")
+      .withIndex("by_owner_path", (q) =>
+        q.eq("ownerTokenIdentifier", file.ownerTokenIdentifier)
+      )
+      .filter((q) => q.eq(q.field("fileId"), file._id))
+      .first()
+    if (entry) await ctx.db.delete(entry._id)
     await ctx.db.delete("files", args.fileId)
   },
 })

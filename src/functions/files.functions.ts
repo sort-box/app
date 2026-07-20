@@ -268,6 +268,7 @@ export const createFileUpload = createServerFn({ method: "POST" })
     const signed = await storageResult.value.signPut({
       key: reservation.objectKey,
       contentType: data.contentType,
+      contentLength: data.size,
       expiresInSeconds: UPLOAD_EXPIRY_SECONDS,
     })
     if (signed.isErr()) {

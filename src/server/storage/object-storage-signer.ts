@@ -12,6 +12,7 @@ export interface ObjectStorageSigner {
   signPut: (input: {
     key: string
     contentType: string
+    contentLength?: number
     expiresInSeconds?: number
   }) => ResultAsync<SignedObjectRequest, StorageError>
 

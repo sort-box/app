@@ -113,4 +113,80 @@ describe("files authorization", () => {
       })
     ).rejects.toThrow("Invalid file state")
   })
+
+  it("enforces owner-scoped paths and quota atomically", async () => {
+    const t = convexTest(schema, modules)
+    const owner = t.withIdentity({
+      subject: "owner",
+      tokenIdentifier: "issuer|owner",
+    })
+    const first = await owner.mutation(api.fileRest.createUpload, {
+      path: "/private/report.pdf",
+      parentPath: "/private",
+      basename: "report.pdf",
+      contentType: "application/pdf",
+      size: 8,
+      quota: 10,
+    })
+
+    await expect(
+      owner.mutation(api.fileRest.createUpload, {
+        path: "/private/report.pdf",
+        parentPath: "/private",
+        basename: "report.pdf",
+        contentType: "application/pdf",
+        size: 1,
+        quota: 10,
+      })
+    ).rejects.toThrow("PATH_CONFLICT")
+    await expect(
+      owner.mutation(api.fileRest.createUpload, {
+        path: "/private/other.pdf",
+        parentPath: "/private",
+        basename: "other.pdf",
+        contentType: "application/pdf",
+        size: 3,
+        quota: 10,
+      })
+    ).rejects.toThrow("QUOTA_EXCEEDED")
+
+    const attacker = t.withIdentity({
+      subject: "attacker",
+      tokenIdentifier: "issuer|attacker",
+    })
+    await expect(
+      attacker.query(api.fileRest.getOwned, { fileId: first.fileId })
+    ).resolves.toBeNull()
+  })
+
+  it("rate limits each authenticated user independently", async () => {
+    const t = convexTest(schema, modules)
+    const user = t.withIdentity({
+      subject: "user",
+      tokenIdentifier: "issuer|user",
+    })
+    const other = t.withIdentity({
+      subject: "other",
+      tokenIdentifier: "issuer|other",
+    })
+
+    expect(
+      await user.mutation(api.fileRest.consumeRateLimit, {
+        bucket: "upload",
+        limit: 1,
+      })
+    ).toEqual({ allowed: true, retryAfter: 0 })
+    expect(
+      await user.mutation(api.fileRest.consumeRateLimit, {
+        bucket: "upload",
+        limit: 1,
+      })
+    ).toMatchObject({ allowed: false })
+    expect(
+      await other.mutation(api.fileRest.consumeRateLimit, {
+        bucket: "upload",
+        limit: 1,
+      })
+    ).toEqual({ allowed: true, retryAfter: 0 })
+  })
 })
