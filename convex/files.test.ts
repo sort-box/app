@@ -88,13 +88,19 @@ describe("files authorization", () => {
   it("enforces owner-scoped paths and the fixed quota atomically", async () => {
     const t = convexTest(schema, modules)
     const fourGiB = 4 * 1024 ** 3
-    await t.mutation(internal.fileRest.createUpload, {
+    const report = await t.mutation(internal.fileRest.createUpload, {
       ...owner,
       path: "/private/report.pdf",
       parentPath: "/private",
       basename: "report.pdf",
       contentType: "application/pdf",
       size: fourGiB,
+    })
+    await t.mutation(internal.fileRest.completeUpload, {
+      ownerTokenIdentifier: owner.ownerTokenIdentifier,
+      fileId: report.fileId,
+      verifiedContentType: "application/pdf",
+      verifiedSize: fourGiB,
     })
     await t.mutation(internal.fileRest.createUpload, {
       ...owner,
@@ -125,6 +131,48 @@ describe("files authorization", () => {
         size: 3 * 1024 ** 3,
       })
     ).rejects.toThrow("QUOTA_EXCEEDED")
+  })
+
+  it("lets a retry supersede a stale pending upload at the same path", async () => {
+    const t = convexTest(schema, modules)
+    const fourGiB = 4 * 1024 ** 3
+    const first = await t.mutation(internal.fileRest.createUpload, {
+      ...owner,
+      path: "/retry.pdf",
+      parentPath: "/",
+      basename: "retry.pdf",
+      contentType: "application/pdf",
+      size: fourGiB,
+    })
+
+    const second = await t.mutation(internal.fileRest.createUpload, {
+      ...owner,
+      path: "/retry.pdf",
+      parentPath: "/",
+      basename: "retry.pdf",
+      contentType: "application/pdf",
+      size: fourGiB,
+    })
+    expect(second.fileId).not.toBe(first.fileId)
+
+    await expect(
+      t.mutation(internal.fileRest.completeUpload, {
+        ownerTokenIdentifier: owner.ownerTokenIdentifier,
+        fileId: first.fileId,
+        verifiedContentType: "application/pdf",
+        verifiedSize: fourGiB,
+      })
+    ).rejects.toThrow("INVALID_FILE_STATE")
+
+    // Fits the 10 GiB quota only if the superseded reservation was refunded.
+    await t.mutation(internal.fileRest.createUpload, {
+      ...owner,
+      path: "/third.pdf",
+      parentPath: "/",
+      basename: "third.pdf",
+      contentType: "application/pdf",
+      size: fourGiB,
+    })
   })
 
   it("uses a fixed rate limit instead of a caller-provided limit", async () => {

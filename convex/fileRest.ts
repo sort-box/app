@@ -95,6 +95,46 @@ async function assertPathAvailable(
   }
 }
 
+// A pending upload reservation must not lock its path until scheduled cleanup:
+// when the client-side PUT fails, retrying the same path supersedes the stale
+// reservation. Safe because the mutation is transactional (the refund rolls
+// back with any later failure), completeUpload rejects non-pending files, and
+// the orphaned object is removed by the failed-file cleanup job.
+async function supersedePendingUpload(
+  ctx: MutationCtx,
+  ownerTokenIdentifier: string,
+  path: string
+) {
+  const entry = await ctx.db
+    .query("fileEntries")
+    .withIndex("by_owner_path", (q) =>
+      q.eq("ownerTokenIdentifier", ownerTokenIdentifier).eq("path", path)
+    )
+    .first()
+  if (
+    !entry ||
+    entry.kind !== "file" ||
+    entry.status !== "pending" ||
+    !entry.fileId
+  ) {
+    return
+  }
+  const file = await ctx.db.get("files", entry.fileId)
+  if (!file || file.status !== "pending" || file.operation !== "upload") {
+    return
+  }
+  const current = await usage(ctx, ownerTokenIdentifier)
+  await ctx.db.patch(current._id, {
+    reservedBytes: Math.max(0, current.reservedBytes - file.declaredSize),
+  })
+  await ctx.db.patch(file._id, {
+    status: "failed",
+    failedAt: Date.now(),
+    failureCode: "SUPERSEDED",
+  })
+  await ctx.db.delete(entry._id)
+}
+
 function assertCanonicalPath(
   path: string,
   parentPath: string,
@@ -302,6 +342,7 @@ export const createUpload = internalMutation({
     ) {
       throw new ConvexError("INVALID_SIZE")
     }
+    await supersedePendingUpload(ctx, args.ownerTokenIdentifier, args.path)
     await assertPathAvailable(ctx, args.ownerTokenIdentifier, args.path)
     await ensureDirectories(ctx, args.ownerTokenIdentifier, args.parentPath)
     await reserveBytes(ctx, args.ownerTokenIdentifier, args.size, TEN_GIB)

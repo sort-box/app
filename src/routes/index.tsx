@@ -16,6 +16,7 @@ import {
   SquarePenIcon,
 } from "lucide-react"
 
+import { CloudPane } from "@/features/cloud/cloud-pane"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import {
@@ -95,7 +96,17 @@ const sections = [
 
 type SectionId = (typeof sections)[number]["id"]
 
-function Shell({ account }: { account: ReactNode }) {
+function renderSection(section: SectionId): ReactNode {
+  return section === "cloud" ? <CloudPane /> : undefined
+}
+
+function Shell({
+  account,
+  renderSection,
+}: {
+  account: ReactNode
+  renderSection?: (section: SectionId) => ReactNode
+}) {
   const [activeSection, setActiveSection] = useState<SectionId>("chat")
   const active = sections.find((section) => section.id === activeSection)
 
@@ -124,7 +135,7 @@ function Shell({ account }: { account: ReactNode }) {
                   variant="ghost"
                   data-active={activeSection === id}
                   onClick={() => setActiveSection(id)}
-                  className="justify-start font-normal data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground"
+                  className="justify-start font-normal data-[active=true]:bg-foreground/10 data-[active=true]:text-sidebar-accent-foreground"
                 >
                   <Icon
                     strokeWidth={1.5}
@@ -142,9 +153,11 @@ function Shell({ account }: { account: ReactNode }) {
         </ResizablePanel>
         <ResizableHandle withHandle />
         <ResizablePanel>
-          <main className="grid h-full place-items-center text-sm text-muted-foreground">
-            {active?.label}
-          </main>
+          {renderSection?.(activeSection) ?? (
+            <main className="grid h-full place-items-center text-sm text-muted-foreground">
+              {active?.label}
+            </main>
+          )}
         </ResizablePanel>
       </ResizablePanelGroup>
     </div>
@@ -170,11 +183,12 @@ function Dashboard() {
     "Account"
 
   if (!isLoaded) {
-    return <Shell account={<AccountSkeleton />} />
+    return <Shell account={<AccountSkeleton />} renderSection={renderSection} />
   }
 
   return (
     <Shell
+      renderSection={renderSection}
       account={
         <DropdownMenu>
           <DropdownMenuTrigger
