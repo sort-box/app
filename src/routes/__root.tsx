@@ -1,4 +1,5 @@
 import { ClerkProvider, useAuth } from "@clerk/tanstack-react-start"
+import { shadcn } from "@clerk/themes"
 import { auth } from "@clerk/tanstack-react-start/server"
 import {
   HeadContent,
@@ -75,7 +76,19 @@ function RootComponent() {
   const { convexClient } = useRouteContext({ from: Route.id })
 
   return (
-    <ClerkProvider>
+    <ClerkProvider
+      appearance={{
+        theme: shadcn,
+        variables: {
+          colorModalBackdrop: "rgba(0, 0, 0, 0.4)",
+        },
+        elements: {
+          modalBackdrop: {
+            backdropFilter: "blur(8px)",
+          },
+        },
+      }}
+    >
       <ConvexProviderWithClerk client={convexClient} useAuth={useAuth}>
         <TooltipProvider>
           <Outlet />
