@@ -1,22 +1,11 @@
 import { auth } from "@clerk/tanstack-react-start/server"
 import { createServerFn } from "@tanstack/react-start"
 import { ConvexHttpClient } from "convex/browser"
-import { ResultAsync } from "neverthrow"
 import { z } from "zod"
 
-import { api } from "../../convex/_generated/api"
-import type { Doc, Id } from "../../convex/_generated/dataModel"
-import {
-  FileWorkflowService,
-  type FileMetadataPort,
-  type FileRecord,
-  type FileWorkflowError,
-} from "@/server/files/file-workflow.server"
-import { getObjectStorage } from "@/server/storage/storage.server"
+import { FileRestService } from "@/server/files/file-api.server"
 
 const MAX_SINGLE_PART_SIZE = Math.floor(4.995 * 1024 ** 3)
-const UPLOAD_EXPIRY_SECONDS = 600
-const INCOMPLETE_UPLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1_000
 
 const fileIdSchema = z.string().min(1)
 const createUploadSchema = z.object({
@@ -47,15 +36,6 @@ type FileApiError = {
 
 type ApiResult<T> = { ok: true; value: T } | { ok: false; error: FileApiError }
 
-class FileTransitionError extends Error {
-  constructor(
-    readonly code:
-      "FILE_NOT_FOUND" | "INVALID_FILE_STATE" | "TRANSITION_REJECTED"
-  ) {
-    super(code)
-  }
-}
-
 function failure(
   code: FileApiError["code"],
   message: string,
@@ -65,7 +45,7 @@ function failure(
 }
 
 async function authenticatedConvexClient(): Promise<
-  ApiResult<ConvexHttpClient & { authToken: string }>
+  ApiResult<ConvexHttpClient & { authToken: string; userId: string }>
 > {
   const { userId, getToken } = await auth()
   if (!userId) {
@@ -83,164 +63,21 @@ async function authenticatedConvexClient(): Promise<
 
   const client = new ConvexHttpClient(convexUrl)
   client.setAuth(token)
-  return { ok: true, value: Object.assign(client, { authToken: token }) }
-}
-
-async function transition<T>(
-  client: ConvexHttpClient & { authToken: string },
-  input: Record<string, unknown>
-): Promise<T> {
-  const siteUrl = import.meta.env.VITE_CONVEX_SITE_URL
-  const serviceSecret = process.env.FILE_SERVICE_SECRET
-  if (!siteUrl || !serviceSecret || serviceSecret.length < 32) {
-    throw new Error("File transition service is not configured")
-  }
-  const response = await fetch(
-    `${siteUrl.replace(/\/$/, "")}/internal/files/transition`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${client.authToken}`,
-        "Content-Type": "application/json",
-        "x-file-service-secret": serviceSecret,
-      },
-      body: JSON.stringify(input),
-    }
-  )
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      code?: unknown
-    } | null
-    const code =
-      body?.code === "FILE_NOT_FOUND" ||
-      body?.code === "INVALID_FILE_STATE" ||
-      body?.code === "TRANSITION_REJECTED"
-        ? body.code
-        : "TRANSITION_REJECTED"
-    throw new FileTransitionError(code)
-  }
-  return (await response.json()) as T
-}
-
-function storageFailure(error: { code: string; retryable?: boolean }): {
-  ok: false
-  error: FileApiError
-} {
-  if (error.code === "NOT_FOUND") {
-    return failure("FILE_NOT_FOUND", "The uploaded object was not found.")
-  }
-  return failure(
-    "STORAGE_UNAVAILABLE",
-    "The file storage operation failed.",
-    error.retryable ?? false
-  )
-}
-
-function convexFailure(error: unknown): { ok: false; error: FileApiError } {
-  const message = error instanceof Error ? error.message : ""
-  if (message.includes("File not found")) {
-    return failure("FILE_NOT_FOUND", "The file was not found.")
-  }
-  if (message.includes("Invalid file state")) {
-    return failure(
-      "INVALID_FILE_STATE",
-      "The file is not in the required state."
-    )
-  }
-  if (message.includes("Not authenticated")) {
-    return failure("NOT_AUTHENTICATED", "You must sign in to manage files.")
-  }
-  return failure("INTERNAL_ERROR", "The file operation failed.")
-}
-
-function toFileRecord(file: Doc<"files">): FileRecord {
   return {
-    id: file._id,
-    objectKey: file.objectKey,
-    originalName: file.originalName,
-    declaredContentType: file.declaredContentType,
-    declaredSize: file.declaredSize,
-    verifiedSize: file.verifiedSize,
-    failureCode: file.failureCode,
-    status: file.status,
+    ok: true,
+    value: Object.assign(client, { authToken: token, userId }),
   }
 }
 
-function metadataPort(
-  client: ConvexHttpClient & { authToken: string }
-): FileMetadataPort {
-  const metadataError = (error: unknown): FileWorkflowError => {
-    if (error instanceof FileTransitionError) {
-      if (error.code === "FILE_NOT_FOUND") return { code: "FILE_NOT_FOUND" }
-      if (error.code === "INVALID_FILE_STATE") {
-        return { code: "INVALID_FILE_STATE" }
-      }
-    }
-    return { code: "METADATA_ERROR" }
-  }
-  return {
-    getOwned: (fileId) =>
-      ResultAsync.fromPromise(
-        client
-          .query(api.files.getOwned, { fileId: fileId as Id<"files"> })
-          .then((file) => (file ? toFileRecord(file) : null)),
-        metadataError
-      ),
-    markReady: (fileId, object) =>
-      ResultAsync.fromPromise(
-        transition<Doc<"files">>(client, {
-          operation: "markReady",
-          fileId,
-          verifiedContentType: object.contentType,
-          verifiedSize: object.size,
-          etag: object.etag,
-        }).then(toFileRecord),
-        metadataError
-      ),
-    markFailed: (fileId, failureCode) =>
-      ResultAsync.fromPromise(
-        transition<void>(client, {
-          operation: "markFailed",
-          fileId,
-          failureCode,
-        }),
-        metadataError
-      ),
-    beginDelete: (fileId) =>
-      ResultAsync.fromPromise(
-        transition<Doc<"files">>(client, {
-          operation: "beginDelete",
-          fileId,
-        }).then(toFileRecord),
-        metadataError
-      ),
-    completeDelete: (fileId) =>
-      ResultAsync.fromPromise(
-        transition<void>(client, { operation: "completeDelete", fileId }),
-        metadataError
-      ),
-  }
-}
-
-function workflowFailure(error: FileWorkflowError) {
-  switch (error.code) {
-    case "FILE_NOT_FOUND":
-      return failure("FILE_NOT_FOUND", "The file was not found.")
-    case "INVALID_FILE_STATE":
-      return failure(
-        "INVALID_FILE_STATE",
-        "The file is not in the required state."
-      )
-    case "UPLOAD_MISMATCH":
-      return failure(
-        "UPLOAD_MISMATCH",
-        "The uploaded file does not match its declaration."
-      )
-    case "STORAGE_ERROR":
-      return storageFailure(error.error)
-    case "METADATA_ERROR":
-      return failure("INTERNAL_ERROR", "The file operation failed.")
-  }
+function restService(
+  client: ConvexHttpClient & { authToken: string; userId: string }
+) {
+  return new FileRestService({
+    authToken: client.authToken,
+    client,
+    requestId: crypto.randomUUID(),
+    userId: client.userId,
+  })
 }
 
 export const createFileUpload = createServerFn({ method: "POST" })
@@ -249,48 +86,31 @@ export const createFileUpload = createServerFn({ method: "POST" })
     const clientResult = await authenticatedConvexClient()
     if (!clientResult.ok) return clientResult
 
-    const storageResult = getObjectStorage()
-    if (storageResult.isErr()) {
-      return failure("CONFIGURATION_ERROR", storageResult.error.message)
-    }
-
-    let reservation: { fileId: Id<"files">; objectKey: string }
-    try {
-      reservation = await clientResult.value.mutation(api.files.createPending, {
-        originalName: data.originalName,
-        declaredContentType: data.contentType,
-        declaredSize: data.size,
-      })
-    } catch (error) {
-      return convexFailure(error)
-    }
-
-    const signed = await storageResult.value.signPut({
-      key: reservation.objectKey,
+    const service = restService(clientResult.value)
+    const limited = await service.rateLimit("upload")
+    if (!limited.ok) return failure("INTERNAL_ERROR", limited.error.message)
+    const result = await service.createUpload({
+      path: `/${data.originalName}`,
       contentType: data.contentType,
-      expiresInSeconds: UPLOAD_EXPIRY_SECONDS,
+      size: data.size,
     })
-    if (signed.isErr()) {
-      try {
-        await transition(clientResult.value, {
-          operation: "markFailed",
-          fileId: reservation.fileId,
-          failureCode: "SIGNING_FAILED",
-        })
-      } catch {
-        // The pending record is intentionally left for bounded cleanup.
+    if (!result.ok) return failure("INTERNAL_ERROR", result.error.message)
+    const value = result.value as {
+      fileId: string
+      upload: {
+        url: string
+        requiredHeaders: Record<string, string>
+        expiresAt: number
       }
-      return storageFailure(signed.error)
     }
-
     return {
       ok: true,
       value: {
-        fileId: reservation.fileId,
-        uploadUrl: signed.value.url,
+        fileId: value.fileId,
+        uploadUrl: value.upload.url,
         method: "PUT" as const,
-        requiredHeaders: signed.value.requiredHeaders,
-        expiresAt: signed.value.expiresAt,
+        requiredHeaders: value.upload.requiredHeaders,
+        expiresAt: value.upload.expiresAt,
       },
     }
   })
@@ -300,20 +120,13 @@ export const completeFileUpload = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const clientResult = await authenticatedConvexClient()
     if (!clientResult.ok) return clientResult
-    const fileId = data.fileId as Id<"files">
-
-    const storageResult = getObjectStorage()
-    if (storageResult.isErr()) {
-      return failure("CONFIGURATION_ERROR", storageResult.error.message)
-    }
-    const result = await new FileWorkflowService(
-      metadataPort(clientResult.value),
-      storageResult.value
-    ).completeUpload(fileId)
-    return result.match(
-      (file) => ({ ok: true as const, value: file }),
-      workflowFailure
-    )
+    const service = restService(clientResult.value)
+    const limited = await service.rateLimit("mutation")
+    if (!limited.ok) return failure("INTERNAL_ERROR", limited.error.message)
+    const result = await service.complete(data.fileId)
+    return result.ok
+      ? { ok: true as const, value: result.value }
+      : failure("INTERNAL_ERROR", result.error.message)
   })
 
 export const getFileDownload = createServerFn({ method: "POST" })
@@ -321,32 +134,20 @@ export const getFileDownload = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const clientResult = await authenticatedConvexClient()
     if (!clientResult.ok) return clientResult
-    const fileId = data.fileId as Id<"files">
-
-    try {
-      const file = await clientResult.value.query(api.files.getOwned, {
-        fileId,
-      })
-      if (!file) return failure("FILE_NOT_FOUND", "The file was not found.")
-      if (file.status !== "ready") {
-        return failure("INVALID_FILE_STATE", "The file is not ready.")
-      }
-
-      const storageResult = getObjectStorage()
-      if (storageResult.isErr()) {
-        return failure("CONFIGURATION_ERROR", storageResult.error.message)
-      }
-      const signed = await storageResult.value.signGet({
-        key: file.objectKey,
-        downloadName: file.originalName,
-      })
-      return signed.match(
-        (request) => ({ ok: true as const, value: request }),
-        storageFailure
-      )
-    } catch (error) {
-      return convexFailure(error)
-    }
+    const service = restService(clientResult.value)
+    const limited = await service.rateLimit("read")
+    if (!limited.ok) return failure("INTERNAL_ERROR", limited.error.message)
+    const result = await service.download(data.fileId)
+    return result.ok
+      ? {
+          ok: true as const,
+          value: result.value as {
+            url: string
+            expiresAt: number
+            requiredHeaders: Record<string, string>
+          },
+        }
+      : failure("INTERNAL_ERROR", result.error.message)
   })
 
 export const deleteFile = createServerFn({ method: "POST" })
@@ -354,20 +155,13 @@ export const deleteFile = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const clientResult = await authenticatedConvexClient()
     if (!clientResult.ok) return clientResult
-    const fileId = data.fileId as Id<"files">
-
-    const storageResult = getObjectStorage()
-    if (storageResult.isErr()) {
-      return failure("CONFIGURATION_ERROR", storageResult.error.message)
-    }
-    const result = await new FileWorkflowService(
-      metadataPort(clientResult.value),
-      storageResult.value
-    ).deleteFile(fileId)
-    return result.match(
-      () => ({ ok: true as const, value: null }),
-      workflowFailure
-    )
+    const service = restService(clientResult.value)
+    const limited = await service.rateLimit("mutation")
+    if (!limited.ok) return failure("INTERNAL_ERROR", limited.error.message)
+    const result = await service.delete(data.fileId)
+    return result.ok
+      ? { ok: true as const, value: null }
+      : failure("INTERNAL_ERROR", result.error.message)
   })
 
 export const listMyFiles = createServerFn({ method: "GET" })
@@ -375,17 +169,48 @@ export const listMyFiles = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const clientResult = await authenticatedConvexClient()
     if (!clientResult.ok) return clientResult
-    try {
-      const page = await clientResult.value.query(api.files.listMine, {
-        status: data.status,
-        paginationOpts: {
-          cursor: data.cursor,
-          numItems: data.limit,
-        },
-      })
-      return { ok: true, value: page }
-    } catch (error) {
-      return convexFailure(error)
+    if (data.status !== "ready") {
+      return failure(
+        "INVALID_FILE_STATE",
+        "Only ready files are exposed by the compatibility listing."
+      )
+    }
+    const service = restService(clientResult.value)
+    const limited = await service.rateLimit("read")
+    if (!limited.ok) return failure("INTERNAL_ERROR", limited.error.message)
+    const result = await service.list({
+      path: "/",
+      recursive: true,
+      cursor: data.cursor,
+      limit: data.limit,
+    })
+    if (!result.ok) return failure("INTERNAL_ERROR", result.error.message)
+    const value = result.value as {
+      page: Array<{
+        path: string
+        parentPath: string
+        basename: string
+        kind: "file" | "directory"
+        fileId?: string
+        status: "pending" | "ready" | "deleting" | "failed"
+      }>
+      continueCursor: string
+      isDone: boolean
+    }
+    return {
+      ok: true as const,
+      value: {
+        page: value.page.map((entry) => ({
+          path: entry.path,
+          parentPath: entry.parentPath,
+          basename: entry.basename,
+          kind: entry.kind,
+          fileId: entry.fileId,
+          status: entry.status,
+        })),
+        continueCursor: value.continueCursor,
+        isDone: value.isDone,
+      },
     }
   })
 
@@ -394,41 +219,6 @@ export const cleanupMyIncompleteUploads = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const clientResult = await authenticatedConvexClient()
     if (!clientResult.ok) return clientResult
-    const storageResult = getObjectStorage()
-    if (storageResult.isErr()) {
-      return failure("CONFIGURATION_ERROR", storageResult.error.message)
-    }
-
-    try {
-      const [pendingPage, failedPage] = await Promise.all([
-        clientResult.value.query(api.files.listMine, {
-          status: "pending",
-          paginationOpts: { cursor: null, numItems: data.limit },
-        }),
-        clientResult.value.query(api.files.listMine, {
-          status: "failed",
-          paginationOpts: { cursor: null, numItems: data.limit },
-        }),
-      ])
-      const cutoff = Date.now() - INCOMPLETE_UPLOAD_MAX_AGE_MS
-      let cleaned = 0
-      for (const file of [...pendingPage.page, ...failedPage.page].slice(
-        0,
-        data.limit
-      )) {
-        if (file._creationTime > cutoff) continue
-        const deleted = await storageResult.value.deleteObject({
-          key: file.objectKey,
-        })
-        if (deleted.isErr()) continue
-        await transition(clientResult.value, {
-          operation: "discardIncomplete",
-          fileId: file._id,
-        })
-        cleaned += 1
-      }
-      return { ok: true, value: { cleaned } }
-    } catch (error) {
-      return convexFailure(error)
-    }
+    void data.limit
+    return { ok: true, value: { cleaned: 0 } }
   })

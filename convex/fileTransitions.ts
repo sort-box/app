@@ -19,87 +19,6 @@ async function ownedFile(
   return file
 }
 
-export const markReady = internalMutation({
-  args: {
-    fileId: v.id("files"),
-    ownerTokenIdentifier: v.string(),
-    verifiedContentType: v.string(),
-    verifiedSize: v.number(),
-    etag: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const file = await ownedFile(ctx, args.fileId, args.ownerTokenIdentifier)
-    if (file.status === "ready") return file
-    if (file.status !== "pending" && file.status !== "failed") {
-      throw new ConvexError("Invalid file state")
-    }
-    await ctx.db.patch("files", args.fileId, {
-      verifiedContentType: args.verifiedContentType,
-      verifiedSize: args.verifiedSize,
-      etag: args.etag,
-      status: "ready",
-      completedAt: Date.now(),
-      failedAt: undefined,
-      failureCode: undefined,
-    })
-    return await ctx.db.get("files", args.fileId)
-  },
-})
-
-export const beginDelete = internalMutation({
-  args: {
-    fileId: v.id("files"),
-    ownerTokenIdentifier: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const file = await ownedFile(ctx, args.fileId, args.ownerTokenIdentifier)
-    if (
-      file.status !== "ready" &&
-      file.status !== "deleting" &&
-      !(file.status === "failed" && file.verifiedSize !== undefined)
-    ) {
-      throw new ConvexError("Invalid file state")
-    }
-    if (file.status !== "deleting") {
-      await ctx.db.patch("files", args.fileId, { status: "deleting" })
-    }
-    return await ctx.db.get("files", args.fileId)
-  },
-})
-
-export const completeDelete = internalMutation({
-  args: {
-    fileId: v.id("files"),
-    ownerTokenIdentifier: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const file = await ownedFile(ctx, args.fileId, args.ownerTokenIdentifier)
-    if (file.status !== "deleting") {
-      throw new ConvexError("Invalid file state")
-    }
-    await ctx.db.delete("files", args.fileId)
-  },
-})
-
-export const markFailed = internalMutation({
-  args: {
-    fileId: v.id("files"),
-    ownerTokenIdentifier: v.string(),
-    failureCode: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const file = await ownedFile(ctx, args.fileId, args.ownerTokenIdentifier)
-    if (file.status === "ready") {
-      throw new ConvexError("Invalid file state")
-    }
-    await ctx.db.patch("files", args.fileId, {
-      status: "failed",
-      failedAt: Date.now(),
-      failureCode: args.failureCode,
-    })
-  },
-})
-
 export const discardIncomplete = internalMutation({
   args: {
     fileId: v.id("files"),
@@ -110,6 +29,32 @@ export const discardIncomplete = internalMutation({
     if (file.status !== "pending" && file.status !== "failed") {
       throw new ConvexError("Invalid file state")
     }
+    if (
+      file.status === "pending" &&
+      file.operation !== undefined &&
+      file.usageBackfilledAt !== undefined
+    ) {
+      const usage = await ctx.db
+        .query("fileUsage")
+        .withIndex("by_owner", (q) =>
+          q.eq("ownerTokenIdentifier", file.ownerTokenIdentifier)
+        )
+        .unique()
+      if (usage) {
+        await ctx.db.patch(usage._id, {
+          reservedBytes: Math.max(0, usage.reservedBytes - file.declaredSize),
+        })
+      }
+    }
+    const entry = await ctx.db
+      .query("fileEntries")
+      .withIndex("by_owner_fileId", (q) =>
+        q
+          .eq("ownerTokenIdentifier", file.ownerTokenIdentifier)
+          .eq("fileId", file._id)
+      )
+      .unique()
+    if (entry) await ctx.db.delete(entry._id)
     await ctx.db.delete("files", args.fileId)
   },
 })
@@ -156,6 +101,32 @@ export const completeCleanup = internalMutation({
     ) {
       throw new ConvexError("Invalid cleanup candidate")
     }
+    if (
+      file.status === "pending" &&
+      file.operation !== undefined &&
+      file.usageBackfilledAt !== undefined
+    ) {
+      const usage = await ctx.db
+        .query("fileUsage")
+        .withIndex("by_owner", (q) =>
+          q.eq("ownerTokenIdentifier", file.ownerTokenIdentifier)
+        )
+        .unique()
+      if (usage) {
+        await ctx.db.patch(usage._id, {
+          reservedBytes: Math.max(0, usage.reservedBytes - file.declaredSize),
+        })
+      }
+    }
+    const entry = await ctx.db
+      .query("fileEntries")
+      .withIndex("by_owner_fileId", (q) =>
+        q
+          .eq("ownerTokenIdentifier", file.ownerTokenIdentifier)
+          .eq("fileId", file._id)
+      )
+      .unique()
+    if (entry) await ctx.db.delete(entry._id)
     await ctx.db.delete("files", args.fileId)
   },
 })

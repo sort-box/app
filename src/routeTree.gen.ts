@@ -10,14 +10,37 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiRouteImport } from './routes/api'
+import { Route as ApiFilesRouteImport } from './routes/api.files'
+import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api.openapi[.]json'
 import { Route as SignInSplatRouteImport } from './routes/sign-in.$'
 import { Route as SignUpSplatRouteImport } from './routes/sign-up.$'
+import { Route as ApiFilesFileIdRouteImport } from './routes/api.files.$fileId'
 import { Route as ApiFilesCleanupRouteImport } from './routes/api.files.cleanup'
+import { Route as ApiFilesUploadsRouteImport } from './routes/api.files.uploads'
+import { Route as ApiFilesFileIdCompleteRouteImport } from './routes/api.files.$fileId.complete'
+import { Route as ApiFilesFileIdCopiesRouteImport } from './routes/api.files.$fileId.copies'
+import { Route as ApiFilesFileIdDownloadRouteImport } from './routes/api.files.$fileId.download'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ApiRoute = ApiRouteImport.update({
+  id: '/api',
+  path: '/api',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiFilesRoute = ApiFilesRouteImport.update({
+  id: '/files',
+  path: '/files',
+  getParentRoute: () => ApiRoute,
+} as any)
+const ApiOpenapiDotjsonRoute = ApiOpenapiDotjsonRouteImport.update({
+  id: '/openapi.json',
+  path: '/openapi.json',
+  getParentRoute: () => ApiRoute,
 } as any)
 const SignInSplatRoute = SignInSplatRouteImport.update({
   id: '/sign-in/$',
@@ -29,44 +52,130 @@ const SignUpSplatRoute = SignUpSplatRouteImport.update({
   path: '/sign-up/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiFilesFileIdRoute = ApiFilesFileIdRouteImport.update({
+  id: '/$fileId',
+  path: '/$fileId',
+  getParentRoute: () => ApiFilesRoute,
+} as any)
 const ApiFilesCleanupRoute = ApiFilesCleanupRouteImport.update({
-  id: '/api/files/cleanup',
-  path: '/api/files/cleanup',
-  getParentRoute: () => rootRouteImport,
+  id: '/cleanup',
+  path: '/cleanup',
+  getParentRoute: () => ApiFilesRoute,
+} as any)
+const ApiFilesUploadsRoute = ApiFilesUploadsRouteImport.update({
+  id: '/uploads',
+  path: '/uploads',
+  getParentRoute: () => ApiFilesRoute,
+} as any)
+const ApiFilesFileIdCompleteRoute = ApiFilesFileIdCompleteRouteImport.update({
+  id: '/complete',
+  path: '/complete',
+  getParentRoute: () => ApiFilesFileIdRoute,
+} as any)
+const ApiFilesFileIdCopiesRoute = ApiFilesFileIdCopiesRouteImport.update({
+  id: '/copies',
+  path: '/copies',
+  getParentRoute: () => ApiFilesFileIdRoute,
+} as any)
+const ApiFilesFileIdDownloadRoute = ApiFilesFileIdDownloadRouteImport.update({
+  id: '/download',
+  path: '/download',
+  getParentRoute: () => ApiFilesFileIdRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api': typeof ApiRouteWithChildren
+  '/api/files': typeof ApiFilesRouteWithChildren
+  '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
+  '/api/files/$fileId': typeof ApiFilesFileIdRouteWithChildren
   '/api/files/cleanup': typeof ApiFilesCleanupRoute
+  '/api/files/uploads': typeof ApiFilesUploadsRoute
+  '/api/files/$fileId/complete': typeof ApiFilesFileIdCompleteRoute
+  '/api/files/$fileId/copies': typeof ApiFilesFileIdCopiesRoute
+  '/api/files/$fileId/download': typeof ApiFilesFileIdDownloadRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api': typeof ApiRouteWithChildren
+  '/api/files': typeof ApiFilesRouteWithChildren
+  '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
+  '/api/files/$fileId': typeof ApiFilesFileIdRouteWithChildren
   '/api/files/cleanup': typeof ApiFilesCleanupRoute
+  '/api/files/uploads': typeof ApiFilesUploadsRoute
+  '/api/files/$fileId/complete': typeof ApiFilesFileIdCompleteRoute
+  '/api/files/$fileId/copies': typeof ApiFilesFileIdCopiesRoute
+  '/api/files/$fileId/download': typeof ApiFilesFileIdDownloadRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api': typeof ApiRouteWithChildren
+  '/api/files': typeof ApiFilesRouteWithChildren
+  '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
+  '/api/files/$fileId': typeof ApiFilesFileIdRouteWithChildren
   '/api/files/cleanup': typeof ApiFilesCleanupRoute
+  '/api/files/uploads': typeof ApiFilesUploadsRoute
+  '/api/files/$fileId/complete': typeof ApiFilesFileIdCompleteRoute
+  '/api/files/$fileId/copies': typeof ApiFilesFileIdCopiesRoute
+  '/api/files/$fileId/download': typeof ApiFilesFileIdDownloadRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/sign-in/$' | '/sign-up/$' | '/api/files/cleanup'
+  fullPaths:
+    | '/'
+    | '/api'
+    | '/api/files'
+    | '/api/openapi.json'
+    | '/sign-in/$'
+    | '/sign-up/$'
+    | '/api/files/$fileId'
+    | '/api/files/cleanup'
+    | '/api/files/uploads'
+    | '/api/files/$fileId/complete'
+    | '/api/files/$fileId/copies'
+    | '/api/files/$fileId/download'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/sign-in/$' | '/sign-up/$' | '/api/files/cleanup'
-  id: '__root__' | '/' | '/sign-in/$' | '/sign-up/$' | '/api/files/cleanup'
+  to:
+    | '/'
+    | '/api'
+    | '/api/files'
+    | '/api/openapi.json'
+    | '/sign-in/$'
+    | '/sign-up/$'
+    | '/api/files/$fileId'
+    | '/api/files/cleanup'
+    | '/api/files/uploads'
+    | '/api/files/$fileId/complete'
+    | '/api/files/$fileId/copies'
+    | '/api/files/$fileId/download'
+  id:
+    | '__root__'
+    | '/'
+    | '/api'
+    | '/api/files'
+    | '/api/openapi.json'
+    | '/sign-in/$'
+    | '/sign-up/$'
+    | '/api/files/$fileId'
+    | '/api/files/cleanup'
+    | '/api/files/uploads'
+    | '/api/files/$fileId/complete'
+    | '/api/files/$fileId/copies'
+    | '/api/files/$fileId/download'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiRoute: typeof ApiRouteWithChildren
   SignInSplatRoute: typeof SignInSplatRoute
   SignUpSplatRoute: typeof SignUpSplatRoute
-  ApiFilesCleanupRoute: typeof ApiFilesCleanupRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -77,6 +186,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/api': {
+      id: '/api'
+      path: '/api'
+      fullPath: '/api'
+      preLoaderRoute: typeof ApiRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/files': {
+      id: '/api/files'
+      path: '/files'
+      fullPath: '/api/files'
+      preLoaderRoute: typeof ApiFilesRouteImport
+      parentRoute: typeof ApiRoute
+    }
+    '/api/openapi.json': {
+      id: '/api/openapi.json'
+      path: '/openapi.json'
+      fullPath: '/api/openapi.json'
+      preLoaderRoute: typeof ApiOpenapiDotjsonRouteImport
+      parentRoute: typeof ApiRoute
     }
     '/sign-in/$': {
       id: '/sign-in/$'
@@ -92,21 +222,100 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SignUpSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/files/$fileId': {
+      id: '/api/files/$fileId'
+      path: '/$fileId'
+      fullPath: '/api/files/$fileId'
+      preLoaderRoute: typeof ApiFilesFileIdRouteImport
+      parentRoute: typeof ApiFilesRoute
+    }
     '/api/files/cleanup': {
       id: '/api/files/cleanup'
-      path: '/api/files/cleanup'
+      path: '/cleanup'
       fullPath: '/api/files/cleanup'
       preLoaderRoute: typeof ApiFilesCleanupRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof ApiFilesRoute
+    }
+    '/api/files/uploads': {
+      id: '/api/files/uploads'
+      path: '/uploads'
+      fullPath: '/api/files/uploads'
+      preLoaderRoute: typeof ApiFilesUploadsRouteImport
+      parentRoute: typeof ApiFilesRoute
+    }
+    '/api/files/$fileId/complete': {
+      id: '/api/files/$fileId/complete'
+      path: '/complete'
+      fullPath: '/api/files/$fileId/complete'
+      preLoaderRoute: typeof ApiFilesFileIdCompleteRouteImport
+      parentRoute: typeof ApiFilesFileIdRoute
+    }
+    '/api/files/$fileId/copies': {
+      id: '/api/files/$fileId/copies'
+      path: '/copies'
+      fullPath: '/api/files/$fileId/copies'
+      preLoaderRoute: typeof ApiFilesFileIdCopiesRouteImport
+      parentRoute: typeof ApiFilesFileIdRoute
+    }
+    '/api/files/$fileId/download': {
+      id: '/api/files/$fileId/download'
+      path: '/download'
+      fullPath: '/api/files/$fileId/download'
+      preLoaderRoute: typeof ApiFilesFileIdDownloadRouteImport
+      parentRoute: typeof ApiFilesFileIdRoute
     }
   }
 }
 
+interface ApiFilesFileIdRouteChildren {
+  ApiFilesFileIdCompleteRoute: typeof ApiFilesFileIdCompleteRoute
+  ApiFilesFileIdCopiesRoute: typeof ApiFilesFileIdCopiesRoute
+  ApiFilesFileIdDownloadRoute: typeof ApiFilesFileIdDownloadRoute
+}
+
+const ApiFilesFileIdRouteChildren: ApiFilesFileIdRouteChildren = {
+  ApiFilesFileIdCompleteRoute: ApiFilesFileIdCompleteRoute,
+  ApiFilesFileIdCopiesRoute: ApiFilesFileIdCopiesRoute,
+  ApiFilesFileIdDownloadRoute: ApiFilesFileIdDownloadRoute,
+}
+
+const ApiFilesFileIdRouteWithChildren = ApiFilesFileIdRoute._addFileChildren(
+  ApiFilesFileIdRouteChildren,
+)
+
+interface ApiFilesRouteChildren {
+  ApiFilesFileIdRoute: typeof ApiFilesFileIdRouteWithChildren
+  ApiFilesCleanupRoute: typeof ApiFilesCleanupRoute
+  ApiFilesUploadsRoute: typeof ApiFilesUploadsRoute
+}
+
+const ApiFilesRouteChildren: ApiFilesRouteChildren = {
+  ApiFilesFileIdRoute: ApiFilesFileIdRouteWithChildren,
+  ApiFilesCleanupRoute: ApiFilesCleanupRoute,
+  ApiFilesUploadsRoute: ApiFilesUploadsRoute,
+}
+
+const ApiFilesRouteWithChildren = ApiFilesRoute._addFileChildren(
+  ApiFilesRouteChildren,
+)
+
+interface ApiRouteChildren {
+  ApiFilesRoute: typeof ApiFilesRouteWithChildren
+  ApiOpenapiDotjsonRoute: typeof ApiOpenapiDotjsonRoute
+}
+
+const ApiRouteChildren: ApiRouteChildren = {
+  ApiFilesRoute: ApiFilesRouteWithChildren,
+  ApiOpenapiDotjsonRoute: ApiOpenapiDotjsonRoute,
+}
+
+const ApiRouteWithChildren = ApiRoute._addFileChildren(ApiRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiRoute: ApiRouteWithChildren,
   SignInSplatRoute: SignInSplatRoute,
   SignUpSplatRoute: SignUpSplatRoute,
-  ApiFilesCleanupRoute: ApiFilesCleanupRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
