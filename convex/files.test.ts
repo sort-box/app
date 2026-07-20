@@ -177,7 +177,7 @@ describe("files authorization", () => {
 
   it("uses a fixed rate limit instead of a caller-provided limit", async () => {
     const t = convexTest(schema, modules)
-    for (let request = 0; request < 10; request += 1) {
+    for (let request = 0; request < 60; request += 1) {
       await expect(
         t.mutation(internal.fileRest.consumeRateLimit, {
           ownerTokenIdentifier: owner.ownerTokenIdentifier,

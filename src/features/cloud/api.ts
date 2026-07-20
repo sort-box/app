@@ -1,3 +1,5 @@
+import { ResultAsync, errAsync, okAsync } from "neverthrow"
+
 export type FileEntry = {
   _id: string
   _creationTime: number
@@ -31,7 +33,8 @@ export class FileApiError extends Error {
   constructor(
     readonly code: FileApiErrorCode,
     message: string,
-    readonly retryable: boolean
+    readonly retryable: boolean,
+    readonly retryAfter?: number
   ) {
     super(message)
     this.name = "FileApiError"
@@ -43,17 +46,66 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   if (response.status === 204) return null as T
   const body = (await response.json().catch(() => null)) as
     | { data: T }
-    | { error: { code: FileApiErrorCode; message: string; retryable: boolean } }
+    | {
+        error: {
+          code: FileApiErrorCode
+          message: string
+          retryable: boolean
+          retryAfter?: number
+        }
+      }
     | null
   if (!response.ok || !body || "error" in body) {
     const error = body && "error" in body ? body.error : null
     throw new FileApiError(
       error?.code ?? "INTERNAL_ERROR",
       error?.message ?? "The file service is unavailable.",
-      error?.retryable ?? false
+      error?.retryable ?? false,
+      error?.retryAfter
     )
   }
   return body.data
+}
+
+const maxRateLimitRetries = 3
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function toFileApiError(error: unknown): FileApiError {
+  return error instanceof FileApiError
+    ? error
+    : new FileApiError(
+        "INTERNAL_ERROR",
+        "The file service is unavailable.",
+        false
+      )
+}
+
+/**
+ * Like `request`, but waits out RATE_LIMITED responses using the
+ * server-provided retry delay so bulk uploads pace themselves instead of
+ * failing.
+ */
+function requestPaced<T>(
+  url: string,
+  init: RequestInit | undefined,
+  onRateLimit?: (retryAfterSeconds: number) => void,
+  attempt = 0
+): ResultAsync<T, FileApiError> {
+  return ResultAsync.fromPromise(request<T>(url, init), toFileApiError).orElse(
+    (error) => {
+      if (error.code !== "RATE_LIMITED" || attempt >= maxRateLimitRetries) {
+        return errAsync(error)
+      }
+      const seconds = Math.min(error.retryAfter ?? 15, 90)
+      onRateLimit?.(seconds)
+      return ResultAsync.fromSafePromise(
+        sleep(seconds * 1000 + Math.random() * 500)
+      ).andThen(() => requestPaced<T>(url, init, onRateLimit, attempt + 1))
+    }
+  )
 }
 
 export function listFiles(input: {
@@ -91,32 +143,56 @@ type UploadTicket = {
   }
 }
 
-export async function uploadFile(path: string, file: File): Promise<void> {
+export function uploadFile(
+  path: string,
+  file: File,
+  options?: { onRateLimit?: (retryAfterSeconds: number) => void }
+): ResultAsync<void, FileApiError> {
   const contentType = file.type || "application/octet-stream"
-  const ticket = await request<UploadTicket>("/api/files/uploads", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, contentType, size: file.size }),
-  })
-  let stored: Response
-  try {
-    stored = await fetch(ticket.upload.url, {
-      method: ticket.upload.method,
-      headers: ticket.upload.requiredHeaders,
-      body: file,
-    })
-  } catch (cause) {
-    console.error("File storage PUT was blocked by the browser", cause)
-    throw new FileApiError(
-      "STORAGE_UNAVAILABLE",
-      "The upload could not reach file storage.",
-      true
+  return requestPaced<UploadTicket>(
+    "/api/files/uploads",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, contentType, size: file.size }),
+    },
+    options?.onRateLimit
+  )
+    .andThen((ticket) =>
+      ResultAsync.fromPromise(
+        fetch(ticket.upload.url, {
+          method: ticket.upload.method,
+          headers: ticket.upload.requiredHeaders,
+          body: file,
+        }),
+        (cause) => {
+          console.error("File storage PUT was blocked by the browser", cause)
+          return new FileApiError(
+            "STORAGE_UNAVAILABLE",
+            "The upload could not reach file storage.",
+            true
+          )
+        }
+      ).andThen((stored) =>
+        stored.ok
+          ? okAsync(ticket)
+          : errAsync(
+              new FileApiError(
+                "STORAGE_UNAVAILABLE",
+                "The upload failed.",
+                true
+              )
+            )
+      )
     )
-  }
-  if (!stored.ok) {
-    throw new FileApiError("STORAGE_UNAVAILABLE", "The upload failed.", true)
-  }
-  await request(`/api/files/${ticket.fileId}/complete`, { method: "POST" })
+    .andThen((ticket) =>
+      requestPaced<null>(
+        `/api/files/${ticket.fileId}/complete`,
+        { method: "POST" },
+        options?.onRateLimit
+      )
+    )
+    .map(() => undefined)
 }
 
 export function joinPath(directory: string, basename: string): string {

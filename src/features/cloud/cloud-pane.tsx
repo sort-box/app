@@ -5,10 +5,10 @@ import {
   useQueryClient,
 } from "@tanstack/react-query"
 import {
+  CloudUploadIcon,
   CornerLeftUpIcon,
   DownloadIcon,
   EllipsisIcon,
-  FileIcon,
   FolderIcon,
   FolderInputIcon,
   HomeIcon,
@@ -29,6 +29,8 @@ import {
   uploadFile,
   type FileEntry,
 } from "./api"
+import { FileTypeIcon, FolderTypeIcon } from "./file-icon"
+import { collectDroppedFiles, uploadBatch, type DroppedFile } from "./uploads"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -172,14 +174,60 @@ export function CloudPane() {
   }
 
   const fileInput = useRef<HTMLInputElement>(null)
-  const uploadMutation = useMutation({
-    mutationFn: (file: File) => uploadFile(joinPath(path, file.name), file),
-    onSuccess: () => {
+  const [activeUploadCount, setActiveUploadCount] = useState(0)
+  const uploading = activeUploadCount > 0
+
+  const runUpload = async (files: Array<DroppedFile>) => {
+    if (files.length === 0) return
+    const total = files.length
+    const label = (completed: number) =>
+      total === 1
+        ? `Uploading “${files[0].relativePath}”…`
+        : `Uploading ${total} files… (${completed}/${total})`
+    const toastId = toast.loading(label(0))
+    setActiveUploadCount((count) => count + 1)
+    try {
+      let completedSoFar = 0
+      const { failures } = await uploadBatch({
+        files,
+        directory: path,
+        upload: (filePath, file) =>
+          uploadFile(filePath, file, {
+            onRateLimit: (retryAfterSeconds) =>
+              toast.loading(
+                `${label(completedSoFar)} Waiting ~${retryAfterSeconds}s for the server.`,
+                { id: toastId }
+              ),
+          }),
+        onProgress: (completed) => {
+          completedSoFar = completed
+          toast.loading(label(completed), { id: toastId })
+        },
+      })
       invalidate()
-      toast.success("File uploaded.")
-    },
-    onError: (error) => toast.error(errorMessage(error)),
-  })
+      const succeeded = total - failures.length
+      if (failures.length === 0) {
+        toast.success(
+          total === 1 ? "File uploaded." : `${total} files uploaded.`,
+          { id: toastId }
+        )
+      } else if (succeeded === 0) {
+        toast.error(errorMessage(failures[0].error), { id: toastId })
+      } else {
+        toast.warning(
+          `${succeeded} of ${total} files uploaded, ${failures.length} failed.`,
+          { id: toastId }
+        )
+      }
+    } finally {
+      setActiveUploadCount((count) => count - 1)
+    }
+  }
+
+  const [dragActive, setDragActive] = useState(false)
+  const dragDepth = useRef(0)
+  const hasDraggedFiles = (dataTransfer: DataTransfer) =>
+    dataTransfer.types.includes("Files")
 
   const download = async (entry: FileEntry) => {
     try {
@@ -196,14 +244,63 @@ export function CloudPane() {
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div
+      className="relative flex h-full flex-col"
+      onDragEnter={(event) => {
+        if (!hasDraggedFiles(event.dataTransfer)) return
+        event.preventDefault()
+        dragDepth.current += 1
+        setDragActive(true)
+      }}
+      onDragOver={(event) => {
+        if (!hasDraggedFiles(event.dataTransfer)) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = "copy"
+      }}
+      onDragLeave={(event) => {
+        if (!hasDraggedFiles(event.dataTransfer)) return
+        dragDepth.current = Math.max(0, dragDepth.current - 1)
+        if (dragDepth.current === 0) setDragActive(false)
+      }}
+      onDrop={(event) => {
+        if (!hasDraggedFiles(event.dataTransfer)) return
+        event.preventDefault()
+        dragDepth.current = 0
+        setDragActive(false)
+        void collectDroppedFiles(event.dataTransfer.items).then(
+          ({ files, unreadable }) => {
+            if (unreadable.length > 0) {
+              toast.error(
+                unreadable.length === 1
+                  ? `“${unreadable[0]}” could not be read.`
+                  : `${unreadable.length} dropped items could not be read.`
+              )
+            }
+            return runUpload(files)
+          }
+        )
+      }}
+    >
+      {dragActive && (
+        <div className="pointer-events-none absolute inset-0 z-10 bg-background/80 p-2">
+          <div className="grid h-full place-items-center rounded-2xl border-2 border-dashed border-primary">
+            <div className="flex flex-col items-center gap-2 text-sm font-medium">
+              <CloudUploadIcon strokeWidth={1.5} className="size-8" />
+              Drop files or folders to upload
+            </div>
+          </div>
+        </div>
+      )}
       <input
         ref={fileInput}
         type="file"
+        multiple
         className="hidden"
         onChange={(event) => {
-          const file = event.target.files?.[0]
-          if (file) uploadMutation.mutate(file)
+          const files = Array.from(event.target.files ?? [])
+          void runUpload(
+            files.map((file) => ({ file, relativePath: file.name }))
+          )
           event.target.value = ""
         }}
       />
@@ -270,14 +367,14 @@ export function CloudPane() {
               <div className="space-y-1">
                 <p className="text-sm font-medium">Nothing here yet</p>
                 <p className="text-sm text-muted-foreground">
-                  Upload a file and it will show up right here.
+                  Drop files or folders here, or upload one below.
                 </p>
               </div>
               <Button
-                disabled={uploadMutation.isPending}
+                disabled={uploading}
                 onClick={() => fileInput.current?.click()}
               >
-                {uploadMutation.isPending ? (
+                {uploading ? (
                   <Loader2Icon className="animate-spin" />
                 ) : (
                   <PlusIcon />
@@ -309,10 +406,7 @@ export function CloudPane() {
                       >
                         <TableCell className="pl-4">
                           <span className="flex items-center gap-2 font-medium">
-                            <FolderIcon
-                              strokeWidth={1.5}
-                              className="size-4 text-muted-foreground"
-                            />
+                            <FolderTypeIcon className="size-4" />
                             {entry.basename}
                           </span>
                         </TableCell>
@@ -325,9 +419,9 @@ export function CloudPane() {
                       <TableRow key={entry._id}>
                         <TableCell className="pl-4">
                           <span className="flex items-center gap-2">
-                            <FileIcon
-                              strokeWidth={1.5}
-                              className="size-4 text-muted-foreground"
+                            <FileTypeIcon
+                              basename={entry.basename}
+                              className="size-4"
                             />
                             {entry.basename}
                           </span>
