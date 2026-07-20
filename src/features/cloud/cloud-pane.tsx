@@ -267,7 +267,18 @@ export function CloudPane() {
         event.preventDefault()
         dragDepth.current = 0
         setDragActive(false)
-        void collectDroppedFiles(event.dataTransfer.items).then(runUpload)
+        void collectDroppedFiles(event.dataTransfer.items).then(
+          ({ files, unreadable }) => {
+            if (unreadable.length > 0) {
+              toast.error(
+                unreadable.length === 1
+                  ? `“${unreadable[0]}” could not be read.`
+                  : `${unreadable.length} dropped items could not be read.`
+              )
+            }
+            return runUpload(files)
+          }
+        )
       }}
     >
       {dragActive && (

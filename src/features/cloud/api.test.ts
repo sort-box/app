@@ -53,7 +53,8 @@ describe("uploadFile rate limit pacing", () => {
       onRateLimit: (seconds) => waits.push(seconds),
     })
     await vi.runAllTimersAsync()
-    await upload
+    const result = await upload
+    expect(result.isOk()).toBe(true)
     expect(waits).toEqual([1])
     expect(fetchMock).toHaveBeenCalledTimes(4)
   })
@@ -61,11 +62,14 @@ describe("uploadFile rate limit pacing", () => {
   it("gives up after exhausting rate limit retries", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => rateLimited())
     vi.stubGlobal("fetch", fetchMock)
-    const assertion = expect(
-      uploadFile("/a.txt", new File(["x"], "a.txt"))
-    ).rejects.toMatchObject({ code: "RATE_LIMITED", retryable: true })
+    const upload = uploadFile("/a.txt", new File(["x"], "a.txt"))
     await vi.runAllTimersAsync()
-    await assertion
+    const result = await upload
+    expect(result.isErr()).toBe(true)
+    expect(result._unsafeUnwrapErr()).toMatchObject({
+      code: "RATE_LIMITED",
+      retryable: true,
+    })
     expect(fetchMock).toHaveBeenCalledTimes(4)
   })
 })

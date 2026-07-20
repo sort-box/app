@@ -1,3 +1,4 @@
+import { ResultAsync, errAsync, okAsync } from "neverthrow"
 import { describe, expect, it } from "vitest"
 
 import { collectDroppedFiles, uploadBatch } from "./uploads"
@@ -12,6 +13,16 @@ function fileEntry(file: File): FileSystemEntry {
     isDirectory: false,
     name: file.name,
     file: (onSuccess: (file: File) => void) => onSuccess(file),
+  } as unknown as FileSystemEntry
+}
+
+function unreadableFileEntry(name: string): FileSystemEntry {
+  return {
+    isFile: true,
+    isDirectory: false,
+    name,
+    file: (_: (file: File) => void, onError: (error: Error) => void) =>
+      onError(new Error("unreadable")),
   } as unknown as FileSystemEntry
 }
 
@@ -66,12 +77,13 @@ describe("collectDroppedFiles", () => {
         fileItem(fileEntry(fakeFile("notes.txt"))),
       ])
     )
-    expect(dropped.map((file) => file.relativePath)).toEqual([
+    expect(dropped.files.map((file) => file.relativePath)).toEqual([
       "photos/a.png",
       "photos/raw/b.dng",
       "photos/c.png",
       "notes.txt",
     ])
+    expect(dropped.unreadable).toEqual([])
   })
 
   it("skips junk files and non-file items", async () => {
@@ -86,9 +98,26 @@ describe("collectDroppedFiles", () => {
         { kind: "string" },
       ])
     )
-    expect(dropped.map((file) => file.relativePath)).toEqual([
+    expect(dropped.files.map((file) => file.relativePath)).toEqual([
       "folder/keep.txt",
     ])
+  })
+
+  it("skips unreadable entries and reports them", async () => {
+    const dropped = await collectDroppedFiles(
+      itemList([
+        fileItem(
+          directoryEntry("folder", [
+            unreadableFileEntry("gone.txt"),
+            fileEntry(fakeFile("keep.txt")),
+          ])
+        ),
+      ])
+    )
+    expect(dropped.files.map((file) => file.relativePath)).toEqual([
+      "folder/keep.txt",
+    ])
+    expect(dropped.unreadable).toEqual(["folder/gone.txt"])
   })
 
   it("falls back to plain files when entries are unavailable", async () => {
@@ -98,7 +127,7 @@ describe("collectDroppedFiles", () => {
         fileItem(null, fakeFile("also-plain.md")),
       ])
     )
-    expect(dropped.map((file) => file.relativePath)).toEqual([
+    expect(dropped.files.map((file) => file.relativePath)).toEqual([
       "plain.txt",
       "also-plain.md",
     ])
@@ -115,8 +144,9 @@ describe("uploadBatch", () => {
     const { failures } = await uploadBatch({
       files: files("a.txt", "nested/b.txt"),
       directory: "/docs",
-      upload: async (path) => {
+      upload: (path) => {
         uploaded.push(path)
+        return okAsync(undefined)
       },
       onProgress: (completed) => progress.push(completed),
     })
@@ -130,14 +160,16 @@ describe("uploadBatch", () => {
     const { failures } = await uploadBatch({
       files: files("ok.txt", "bad.txt", "ok2.txt"),
       directory: "/",
-      upload: async (path) => {
-        if (path.includes("bad")) throw new Error("boom")
+      upload: (path): ResultAsync<void, Error> => {
+        if (path.includes("bad")) return errAsync(new Error("boom"))
         uploaded.push(path)
+        return okAsync(undefined)
       },
     })
     expect(uploaded.sort()).toEqual(["/ok.txt", "/ok2.txt"])
     expect(failures).toHaveLength(1)
     expect(failures[0].relativePath).toBe("bad.txt")
+    expect(failures[0].error).toBeInstanceOf(Error)
   })
 
   it("never runs more uploads than the concurrency limit", async () => {
@@ -147,12 +179,15 @@ describe("uploadBatch", () => {
       files: files("1", "2", "3", "4", "5"),
       directory: "/",
       concurrency: 2,
-      upload: async () => {
-        active += 1
-        peak = Math.max(peak, active)
-        await new Promise((resolve) => setTimeout(resolve, 0))
-        active -= 1
-      },
+      upload: () =>
+        ResultAsync.fromSafePromise(
+          (async () => {
+            active += 1
+            peak = Math.max(peak, active)
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            active -= 1
+          })()
+        ),
     })
     expect(peak).toBeLessThanOrEqual(2)
   })
