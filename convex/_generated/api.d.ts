@@ -66,7 +66,4 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {
-  migrations: import("@convex-dev/migrations/_generated/component.js").ComponentApi<"migrations">;
-  rag: import("@convex-dev/rag/_generated/component.js").ComponentApi<"rag">;
-};
+export declare const components: {};
