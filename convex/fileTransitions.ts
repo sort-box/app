@@ -1,7 +1,11 @@
 import { ConvexError, v } from "convex/values"
 
 import type { Id } from "./_generated/dataModel"
-import { internalMutation, type MutationCtx } from "./_generated/server"
+import {
+  internalMutation,
+  internalQuery,
+  type MutationCtx,
+} from "./_generated/server"
 
 async function ownedFile(
   ctx: MutationCtx,
@@ -105,6 +109,52 @@ export const discardIncomplete = internalMutation({
     const file = await ownedFile(ctx, args.fileId, args.ownerTokenIdentifier)
     if (file.status !== "pending" && file.status !== "failed") {
       throw new ConvexError("Invalid file state")
+    }
+    await ctx.db.delete("files", args.fileId)
+  },
+})
+
+export const listExpired = internalQuery({
+  args: {
+    cutoff: v.number(),
+    limit: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const limit = Math.max(1, Math.min(100, Math.floor(args.limit)))
+    const [pending, failed] = await Promise.all([
+      ctx.db
+        .query("files")
+        .withIndex("by_status", (q) =>
+          q.eq("status", "pending").lt("_creationTime", args.cutoff)
+        )
+        .take(limit),
+      ctx.db
+        .query("files")
+        .withIndex("by_status", (q) =>
+          q.eq("status", "failed").lt("_creationTime", args.cutoff)
+        )
+        .take(limit),
+    ])
+    return [...pending, ...failed].slice(0, limit).map((file) => ({
+      fileId: file._id,
+      objectKey: file.objectKey,
+    }))
+  },
+})
+
+export const completeCleanup = internalMutation({
+  args: {
+    fileId: v.id("files"),
+    objectKey: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const file = await ctx.db.get("files", args.fileId)
+    if (
+      !file ||
+      file.objectKey !== args.objectKey ||
+      (file.status !== "pending" && file.status !== "failed")
+    ) {
+      throw new ConvexError("Invalid cleanup candidate")
     }
     await ctx.db.delete("files", args.fileId)
   },

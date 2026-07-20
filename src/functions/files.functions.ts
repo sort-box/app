@@ -14,7 +14,7 @@ import {
 } from "@/server/files/file-workflow.server"
 import { getObjectStorage } from "@/server/storage/storage.server"
 
-const MAX_SINGLE_PART_SIZE = 5 * 1024 ** 3 - 5 * 1024 ** 2
+const MAX_SINGLE_PART_SIZE = Math.floor(4.995 * 1024 ** 3)
 const UPLOAD_EXPIRY_SECONDS = 600
 const INCOMPLETE_UPLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1_000
 
@@ -47,6 +47,15 @@ type FileApiError = {
 
 type ApiResult<T> = { ok: true; value: T } | { ok: false; error: FileApiError }
 
+class FileTransitionError extends Error {
+  constructor(
+    readonly code:
+      "FILE_NOT_FOUND" | "INVALID_FILE_STATE" | "TRANSITION_REJECTED"
+  ) {
+    super(code)
+  }
+}
+
 function failure(
   code: FileApiError["code"],
   message: string,
@@ -64,7 +73,7 @@ async function authenticatedConvexClient(): Promise<
   }
 
   const token = await getToken()
-  const convexUrl = process.env.VITE_CONVEX_URL
+  const convexUrl = import.meta.env.VITE_CONVEX_URL
   if (!token || !convexUrl) {
     return failure(
       "CONFIGURATION_ERROR",
@@ -81,7 +90,7 @@ async function transition<T>(
   client: ConvexHttpClient & { authToken: string },
   input: Record<string, unknown>
 ): Promise<T> {
-  const siteUrl = process.env.VITE_CONVEX_SITE_URL
+  const siteUrl = import.meta.env.VITE_CONVEX_SITE_URL
   const serviceSecret = process.env.FILE_SERVICE_SECRET
   if (!siteUrl || !serviceSecret || serviceSecret.length < 32) {
     throw new Error("File transition service is not configured")
@@ -98,7 +107,18 @@ async function transition<T>(
       body: JSON.stringify(input),
     }
   )
-  if (!response.ok) throw new Error("File transition rejected")
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      code?: unknown
+    } | null
+    const code =
+      body?.code === "FILE_NOT_FOUND" ||
+      body?.code === "INVALID_FILE_STATE" ||
+      body?.code === "TRANSITION_REJECTED"
+        ? body.code
+        : "TRANSITION_REJECTED"
+    throw new FileTransitionError(code)
+  }
   return (await response.json()) as T
 }
 
@@ -141,6 +161,7 @@ function toFileRecord(file: Doc<"files">): FileRecord {
     declaredContentType: file.declaredContentType,
     declaredSize: file.declaredSize,
     verifiedSize: file.verifiedSize,
+    failureCode: file.failureCode,
     status: file.status,
   }
 }
@@ -148,7 +169,15 @@ function toFileRecord(file: Doc<"files">): FileRecord {
 function metadataPort(
   client: ConvexHttpClient & { authToken: string }
 ): FileMetadataPort {
-  const metadataError = (): FileWorkflowError => ({ code: "METADATA_ERROR" })
+  const metadataError = (error: unknown): FileWorkflowError => {
+    if (error instanceof FileTransitionError) {
+      if (error.code === "FILE_NOT_FOUND") return { code: "FILE_NOT_FOUND" }
+      if (error.code === "INVALID_FILE_STATE") {
+        return { code: "INVALID_FILE_STATE" }
+      }
+    }
+    return { code: "METADATA_ERROR" }
+  }
   return {
     getOwned: (fileId) =>
       ResultAsync.fromPromise(

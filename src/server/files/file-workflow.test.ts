@@ -118,4 +118,26 @@ describe("FileWorkflowService", () => {
     if (result.isErr()) expect(result.error.code).toBe("FILE_NOT_FOUND")
     expect(headObject).not.toHaveBeenCalled()
   })
+
+  it("does not resurrect a failed deletion as a completed upload", async () => {
+    const headObject = vi.fn(storage().headObject)
+    const service = new FileWorkflowService(
+      metadata({
+        getOwned: () =>
+          okAsync({
+            ...pending,
+            status: "failed",
+            failureCode: "DELETE_FAILED",
+            verifiedSize: pending.declaredSize,
+          }),
+      }),
+      storage({ headObject })
+    )
+
+    const result = await service.completeUpload(pending.id)
+
+    expect(result.isErr()).toBe(true)
+    if (result.isErr()) expect(result.error.code).toBe("INVALID_FILE_STATE")
+    expect(headObject).not.toHaveBeenCalled()
+  })
 })

@@ -28,5 +28,6 @@ export default defineSchema({
       "ownerTokenIdentifier",
       "status",
     ])
+    .index("by_status", ["status"])
     .index("by_objectKey", ["objectKey"]),
 })

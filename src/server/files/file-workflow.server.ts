@@ -9,6 +9,7 @@ export type FileRecord = {
   declaredContentType: string
   declaredSize: number
   verifiedSize?: number
+  failureCode?: string
   status: "pending" | "ready" | "deleting" | "failed"
 }
 
@@ -50,6 +51,9 @@ export class FileWorkflowService {
     return this.metadata.getOwned(fileId).andThen((file) => {
       if (!file) return errAsync({ code: "FILE_NOT_FOUND" as const })
       if (file.status === "ready") return okAsync(file)
+      if (file.status === "failed" && file.failureCode === "DELETE_FAILED") {
+        return errAsync({ code: "INVALID_FILE_STATE" as const })
+      }
       if (file.status !== "pending" && file.status !== "failed") {
         return errAsync({ code: "INVALID_FILE_STATE" as const })
       }

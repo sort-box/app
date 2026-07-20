@@ -8,6 +8,8 @@
  * @module
  */
 
+import type * as crons from "../crons.js";
+import type * as fileCleanup from "../fileCleanup.js";
 import type * as fileTransitions from "../fileTransitions.js";
 import type * as files from "../files.js";
 import type * as http from "../http.js";
@@ -20,6 +22,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  crons: typeof crons;
+  fileCleanup: typeof fileCleanup;
   fileTransitions: typeof fileTransitions;
   files: typeof files;
   http: typeof http;
