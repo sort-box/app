@@ -14,6 +14,24 @@ const context = {
 }
 
 describe("ConvexChatHistory", () => {
+  it("refreshes the auth token for each history request", async () => {
+    const getAuthToken = vi.fn(async () => "fresh-token")
+    const fetchMock = vi.fn<FetchCall>(async () =>
+      Response.json({ conversationId: "chat-1", messages: [] })
+    )
+    const history = new ConvexChatHistory(
+      { ...context, getAuthToken },
+      fetchMock as typeof fetch
+    )
+
+    await history.startTurn({ conversationId: null, content: "Hello" })
+
+    expect(getAuthToken).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+      Authorization: "Bearer fresh-token",
+    })
+  })
+
   it("sends the start contract and decodes stored tool calls", async () => {
     const fetchMock = vi.fn<FetchCall>(async () =>
       Response.json({

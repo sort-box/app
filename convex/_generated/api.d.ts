@@ -22,6 +22,7 @@ import type * as fileRest from "../fileRest.js";
 import type * as fileTransitions from "../fileTransitions.js";
 import type * as http from "../http.js";
 import type * as migrations from "../migrations.js";
+import type * as organizationPlans from "../organizationPlans.js";
 import type * as status from "../status.js";
 import type * as userUsage from "../userUsage.js";
 
@@ -46,6 +47,7 @@ declare const fullApi: ApiFromModules<{
   fileTransitions: typeof fileTransitions;
   http: typeof http;
   migrations: typeof migrations;
+  organizationPlans: typeof organizationPlans;
   status: typeof status;
   userUsage: typeof userUsage;
 }>;

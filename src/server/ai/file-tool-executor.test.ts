@@ -78,6 +78,9 @@ function gateway(overrides: Partial<FileToolGateway> = {}): FileToolGateway {
         nextCursor: "chunk-cursor",
       })
     ),
+    proposeOrganization: vi.fn(() =>
+      okAsync({ planId: "plan-1", revision: 1 })
+    ),
     ...overrides,
   }
 }
@@ -95,6 +98,53 @@ function reranking(overrides: Partial<RerankingPort> = {}): RerankingPort {
 }
 
 describe("FileToolExecutorService", () => {
+  it("treats tilde as the workspace root", async () => {
+    const files = gateway()
+    const service = new FileToolExecutorService(files, reranking())
+
+    await service.listFiles({ path: "~" })
+    await service.listFiles({ path: "~/Applications" })
+
+    expect(files.listEntries).toHaveBeenNthCalledWith(1, {
+      path: "/",
+      cursor: null,
+      limit: 50,
+    })
+    expect(files.listEntries).toHaveBeenNthCalledWith(2, {
+      path: "/Applications",
+      cursor: null,
+      limit: 50,
+    })
+  })
+
+  it("restarts listing once when a pagination cursor is invalid", async () => {
+    const files = gateway()
+    files.listEntries = vi
+      .fn()
+      .mockReturnValueOnce(
+        errAsync({ code: "INVALID_INPUT" as const, retryable: false })
+      )
+      .mockReturnValueOnce(okAsync({ entries: [], nextCursor: "fresh" }))
+    const service = new FileToolExecutorService(files, reranking())
+
+    const result = await service.listFiles({
+      path: "/",
+      cursor: "stale-or-invented",
+    })
+
+    expect(result.isOk()).toBe(true)
+    expect(files.listEntries).toHaveBeenNthCalledWith(1, {
+      path: "/",
+      cursor: "stale-or-invented",
+      limit: 50,
+    })
+    expect(files.listEntries).toHaveBeenNthCalledWith(2, {
+      path: "/",
+      cursor: null,
+      limit: 50,
+    })
+  })
+
   it("lists files with defaults and maps entries to the tool contract", async () => {
     const files = gateway()
     const service = new FileToolExecutorService(files, reranking())

@@ -8,6 +8,13 @@ export const chatRequestSchema = z
   .object({
     conversation_id: z.string().min(1).nullable().optional(),
     message: z.string().trim().min(1).max(MAX_CHAT_MESSAGE_LENGTH),
+    proposal_revision: z
+      .object({
+        proposal_id: z.string().min(1),
+        feedback: z.string().trim().min(1).max(2_000),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
 
@@ -23,5 +30,6 @@ export type ChatStreamEvent =
   | { type: "conversation-id"; conversationId: string }
   | { type: "text-delta"; text: string }
   | { type: "tool-call"; name: string }
+  | { type: "organization-proposal"; planId: string; revision: number }
   | { type: "error"; error: ChatError }
   | { type: "done" }

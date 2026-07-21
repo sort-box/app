@@ -36,6 +36,7 @@ export type FileApiResult<T> = Success<T> | Failure
 
 export type FileApiContext = {
   authToken: string
+  getAuthToken?: () => Promise<string | null>
   client: ConvexHttpClient
   requestId: string
   userId: string
@@ -118,6 +119,10 @@ export const fileApiMiddleware = createMiddleware().server(
       context: {
         fileApi: {
           authToken: token,
+          getAuthToken: async () => {
+            const latestAuth = await auth()
+            return await latestAuth.getToken()
+          },
           client,
           requestId,
           userId,
@@ -283,7 +288,8 @@ function mapFailure(value: unknown): Failure {
     return error("INVALID_FILE_STATE", "The file is not in the required state.")
   if (
     message.includes("INVALID_INPUT") ||
-    message.includes("UPLOAD_MISMATCH")
+    message.includes("UPLOAD_MISMATCH") ||
+    message.includes("Failed to parse cursor")
   ) {
     return error("INVALID_INPUT", "The file operation input is invalid.")
   }
@@ -414,11 +420,13 @@ export class FileRestService {
         "The trusted file service is not configured."
       )
     }
+    const authToken =
+      (await this.context.getAuthToken?.()) ?? this.context.authToken
     return ResultAsync.fromPromise(
       fetch(`${siteUrl.replace(/\/$/, "")}/internal/files/rest`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${this.context.authToken}`,
+          Authorization: `Bearer ${authToken}`,
           "Content-Type": "application/json",
           "x-file-service-secret": serviceSecret,
         },

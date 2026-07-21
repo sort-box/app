@@ -76,10 +76,119 @@ function executor(): FileToolExecutor {
         chunks: [],
       })
     ),
+    proposeFileOrganization: vi.fn(() =>
+      okAsync({ plan_id: "plan-1", revision: 1 })
+    ),
   }
 }
 
 describe("FileToolConversationService", () => {
+  it("continues beyond six tool rounds until the model finishes", async () => {
+    const toolRounds = Array.from({ length: 7 }, (_, index) =>
+      events([
+        {
+          type: "tool-call",
+          call: {
+            id: `call-${index}`,
+            name: "list_files",
+            arguments: { path: "/" },
+          },
+        },
+        {
+          type: "finish",
+          reason: "tool-calls",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        },
+      ])
+    )
+    const finalRound = events([
+      { type: "text-delta", text: "Proposal ready." },
+      {
+        type: "finish",
+        reason: "stop",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ])
+    const inner = provider([...toolRounds, finalRound])
+    const service = new FileToolConversationService(inner, executor())
+    const started = await service.streamConversation(
+      { messages: [{ role: "user", content: "Organize everything" }] },
+      undefined,
+      "chat-1"
+    )
+    if (started.isErr()) throw new Error("conversation failed")
+
+    const results = await collect(started.value)
+
+    expect(inner.streamConversation).toHaveBeenCalledTimes(8)
+    expect(
+      results.some(
+        (result) =>
+          result.isOk() &&
+          result.value.type === "text-delta" &&
+          result.value.text.includes("file-operation limit")
+      )
+    ).toBe(false)
+    expect(results.at(-1)?._unsafeUnwrap()).toMatchObject({
+      type: "finish",
+      reason: "stop",
+    })
+  })
+
+  it("retries a transient tool failure before returning it to the model", async () => {
+    const first = events([
+      {
+        type: "tool-call",
+        call: {
+          id: "call-retry",
+          name: "search_files",
+          arguments: { query: "admissions" },
+        },
+      },
+      {
+        type: "finish",
+        reason: "tool-calls",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ])
+    const second = events([
+      { type: "text-delta", text: "Done." },
+      {
+        type: "finish",
+        reason: "stop",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ])
+    const inner = provider([first, second])
+    const tools = executor()
+    tools.searchFiles = vi
+      .fn()
+      .mockReturnValueOnce(
+        errAsync({
+          code: "UNAVAILABLE" as const,
+          message: "Temporarily unavailable.",
+          retryable: true as const,
+        })
+      )
+      .mockReturnValueOnce(okAsync({ matches: [], incomplete: false as const }))
+    const service = new FileToolConversationService(inner, tools)
+    const started = await service.streamConversation(
+      { messages: [{ role: "user", content: "Organize my files" }] },
+      undefined,
+      "chat-1"
+    )
+    if (started.isErr()) throw new Error("conversation failed")
+
+    await collect(started.value)
+
+    expect(tools.searchFiles).toHaveBeenCalledTimes(2)
+    const continuation = inner.streamConversation.mock.calls[1][0]
+    expect(continuation.messages.at(-1)).toMatchObject({
+      role: "tool",
+      content: expect.stringContaining('"ok":true'),
+    })
+  })
+
   it("executes a validated tool call and continues the conversation", async () => {
     const first = events([
       {
@@ -134,6 +243,7 @@ describe("FileToolConversationService", () => {
       "search_files",
       "find_exact_references",
       "read_file",
+      "propose_file_organization",
     ])
     expect(continuation.messages.at(-1)).toMatchObject({
       role: "tool",
@@ -224,6 +334,92 @@ describe("FileToolConversationService", () => {
         code: "INVALID_INPUT",
         message: "The file tool call was invalid.",
         retryable: false,
+      },
+    })
+  })
+
+  it("rejects an incomplete proposal and lets the model repair it in the same turn", async () => {
+    const listRound = events([
+      {
+        type: "tool-call",
+        call: { id: "list-1", name: "list_files", arguments: { path: "/" } },
+      },
+      { type: "finish", reason: "tool-calls" },
+    ])
+    const incompleteRound = events([
+      {
+        type: "tool-call",
+        call: {
+          id: "proposal-1",
+          name: "propose_file_organization",
+          arguments: {
+            summary: "Organize the workspace.",
+            operations: [
+              { before_path: "/resume.pdf", after_path: "/Career/resume.pdf" },
+            ],
+          },
+        },
+      },
+      { type: "finish", reason: "tool-calls" },
+    ])
+    const repairedRound = events([
+      {
+        type: "tool-call",
+        call: {
+          id: "proposal-2",
+          name: "propose_file_organization",
+          arguments: {
+            summary: "Organize the workspace.",
+            unchanged_paths: ["/notes.txt"],
+            operations: [
+              { before_path: "/resume.pdf", after_path: "/Career/resume.pdf" },
+            ],
+          },
+        },
+      },
+      { type: "finish", reason: "tool-calls" },
+    ])
+    const inner = provider([
+      listRound,
+      incompleteRound,
+      repairedRound,
+      events([{ type: "finish", reason: "stop" }]),
+    ])
+    const tools = executor()
+    tools.listFiles = vi.fn(() =>
+      okAsync({
+        entries: [
+          { path: "/resume.pdf", kind: "file" as const },
+          { path: "/notes.txt", kind: "file" as const },
+        ],
+      })
+    )
+    const result = await new FileToolConversationService(
+      inner,
+      tools
+    ).streamConversation(
+      { messages: [{ role: "user", content: "Organize everything" }] },
+      undefined,
+      "chat-1"
+    )
+
+    expect(result.isOk()).toBe(true)
+    if (result.isErr()) return
+    await collect(result.value)
+
+    expect(tools.proposeFileOrganization).toHaveBeenCalledOnce()
+    const repairMessage =
+      inner.streamConversation.mock.calls[2][0].messages.find(
+        (message): message is Extract<AiMessage, { role: "tool" }> =>
+          message.role === "tool" && message.toolCallId === "proposal-1"
+      )
+    expect(repairMessage).toBeDefined()
+    if (!repairMessage) return
+    expect(JSON.parse(repairMessage.content)).toMatchObject({
+      ok: false,
+      error: {
+        code: "INVALID_INPUT",
+        message: expect.stringContaining("/notes.txt"),
       },
     })
   })

@@ -1,4 +1,4 @@
-import { err, errAsync, ok } from "neverthrow"
+import { err, errAsync, ok, type ResultAsync } from "neverthrow"
 
 import {
   MAX_STORED_MESSAGE_BYTES,
@@ -19,6 +19,7 @@ import {
   fileToolDefinitions,
   findExactReferencesInputSchema,
   listFilesInputSchema,
+  proposeFileOrganizationInputSchema,
   readFileInputSchema,
   searchFilesInputSchema,
   type FileToolError,
@@ -26,8 +27,28 @@ import {
 } from "./file-tools"
 import type { AiMessageRecorder } from "./message-recorder"
 
-const MAX_TOOL_ROUNDS = 6
 const MAX_TOOL_CALLS_PER_ROUND = 8
+const MAX_TRANSIENT_TOOL_ATTEMPTS = 3
+
+type FileToolSession = {
+  discoveredFiles: Set<string>
+  listCursors: Map<string, string>
+}
+
+async function executeWithRetry<T>(run: () => ResultAsync<T, FileToolError>) {
+  let result = await run()
+  for (
+    let attempt = 1;
+    result.isErr() &&
+    result.error.retryable &&
+    attempt < MAX_TRANSIENT_TOOL_ATTEMPTS;
+    attempt += 1
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, attempt * 100))
+    result = await run()
+  }
+  return result
+}
 
 function invalidResponse(message: string): AiProviderError {
   return { code: "INVALID_RESPONSE", message }
@@ -59,55 +80,181 @@ function invalidToolCall(): { ok: false; error: FileToolError } {
   }
 }
 
+function proposalInputError(
+  input: typeof proposeFileOrganizationInputSchema._output
+): string | undefined {
+  const sources = new Set<string>()
+  const destinations = new Set<string>()
+  const unchanged = new Set(input.unchanged_paths ?? [])
+  const unresolved = new Set(input.unresolved_paths ?? [])
+  for (const operation of input.operations) {
+    if (operation.before_path === operation.after_path) {
+      return `Source and destination are identical: ${operation.before_path}. Remove this operation and account for it as unchanged.`
+    }
+    if (sources.has(operation.before_path)) {
+      return `Duplicate source path: ${operation.before_path}. Include each source in exactly one operation.`
+    }
+    if (destinations.has(operation.after_path)) {
+      return `Duplicate destination path: ${operation.after_path}. Give each item a unique destination.`
+    }
+    if (unchanged.has(operation.before_path)) {
+      return `Path is both moved and unchanged: ${operation.before_path}. Keep it in exactly one category.`
+    }
+    if (unresolved.has(operation.before_path)) {
+      return `Path is both moved and unresolved: ${operation.before_path}. Keep it in exactly one category.`
+    }
+    const overlappingSource = [...sources].find(
+      (source) =>
+        operation.before_path.startsWith(`${source}/`) ||
+        source.startsWith(`${operation.before_path}/`)
+    )
+    if (overlappingSource) {
+      return `Overlapping source paths: ${overlappingSource} and ${operation.before_path}. Move the folder or its descendant, not both.`
+    }
+    sources.add(operation.before_path)
+    destinations.add(operation.after_path)
+  }
+  const duplicatedClassification = [...unchanged].find((path) =>
+    unresolved.has(path)
+  )
+  if (duplicatedClassification) {
+    return `Path is both unchanged and unresolved: ${duplicatedClassification}. Keep it in exactly one category.`
+  }
+  return undefined
+}
+
 async function executeToolCall(
   call: AiToolCall,
-  executor: FileToolExecutor
-): Promise<string> {
+  executor: FileToolExecutor,
+  conversationId: string,
+  session: FileToolSession
+): Promise<{
+  content: string
+  proposal?: { planId: string; revision: number }
+}> {
+  const content = (value: string) => ({ content: value })
   if (call.name === "list_files") {
     const input = listFilesInputSchema.safeParse(call.arguments)
-    if (!input.success) return JSON.stringify(invalidToolCall())
-    return serializeToolResult(
-      (await executor.listFiles(input.data)).match(
-        (value) => ({ ok: true as const, value }),
-        (error) => ({ ok: false as const, error })
+    if (!input.success) return content(JSON.stringify(invalidToolCall()))
+    const path = input.data.path ?? "/"
+    const cursor = input.data.cursor
+      ? (session.listCursors.get(path) ?? null)
+      : null
+    const result = await executeWithRetry(() =>
+      executor.listFiles({ ...input.data, cursor })
+    )
+    if (result.isOk()) {
+      for (const entry of result.value.entries) {
+        if (entry.kind === "file") session.discoveredFiles.add(entry.path)
+      }
+      if (result.value.next_cursor) {
+        session.listCursors.set(path, result.value.next_cursor)
+      } else {
+        session.listCursors.delete(path)
+      }
+    }
+    return content(
+      serializeToolResult(
+        result.match(
+          (value) => ({ ok: true as const, value }),
+          (error) => ({ ok: false as const, error })
+        )
       )
     )
   }
 
   if (call.name === "search_files") {
     const input = searchFilesInputSchema.safeParse(call.arguments)
-    if (!input.success) return JSON.stringify(invalidToolCall())
-    return serializeToolResult(
-      (await executor.searchFiles(input.data)).match(
-        (value) => ({ ok: true as const, value }),
-        (error) => ({ ok: false as const, error })
+    if (!input.success) return content(JSON.stringify(invalidToolCall()))
+    return content(
+      serializeToolResult(
+        (await executeWithRetry(() => executor.searchFiles(input.data))).match(
+          (value) => ({ ok: true as const, value }),
+          (error) => ({ ok: false as const, error })
+        )
       )
     )
   }
 
   if (call.name === "find_exact_references") {
     const input = findExactReferencesInputSchema.safeParse(call.arguments)
-    if (!input.success) return JSON.stringify(invalidToolCall())
-    return serializeToolResult(
-      (await executor.findExactReferences(input.data)).match(
-        (value) => ({ ok: true as const, value }),
-        (error) => ({ ok: false as const, error })
+    if (!input.success) return content(JSON.stringify(invalidToolCall()))
+    return content(
+      serializeToolResult(
+        (
+          await executeWithRetry(() => executor.findExactReferences(input.data))
+        ).match(
+          (value) => ({ ok: true as const, value }),
+          (error) => ({ ok: false as const, error })
+        )
       )
     )
   }
 
   if (call.name === "read_file") {
     const input = readFileInputSchema.safeParse(call.arguments)
-    if (!input.success) return JSON.stringify(invalidToolCall())
-    return serializeToolResult(
-      (await executor.readFile(input.data)).match(
-        (value) => ({ ok: true as const, value }),
-        (error) => ({ ok: false as const, error })
+    if (!input.success) return content(JSON.stringify(invalidToolCall()))
+    return content(
+      serializeToolResult(
+        (await executeWithRetry(() => executor.readFile(input.data))).match(
+          (value) => ({ ok: true as const, value }),
+          (error) => ({ ok: false as const, error })
+        )
       )
     )
   }
 
-  return JSON.stringify(invalidToolCall())
+  if (call.name === "propose_file_organization") {
+    const input = proposeFileOrganizationInputSchema.safeParse(call.arguments)
+    if (!input.success) return content(JSON.stringify(invalidToolCall()))
+    const inputError = proposalInputError(input.data)
+    if (inputError) {
+      return content(
+        serializeToolResult({
+          ok: false,
+          error: {
+            code: "INVALID_INPUT",
+            message: inputError,
+            retryable: false,
+          },
+        })
+      )
+    }
+    const accounted = new Set([
+      ...input.data.operations.map((operation) => operation.before_path),
+      ...(input.data.unchanged_paths ?? []),
+      ...(input.data.unresolved_paths ?? []),
+    ])
+    const missing = [...session.discoveredFiles].filter(
+      (path) => !accounted.has(path)
+    )
+    if (missing.length > 0) {
+      return content(
+        serializeToolResult({
+          ok: false,
+          error: {
+            code: "INVALID_INPUT",
+            message: `The proposal omitted ${missing.length} discovered file(s). Account for each as moved, unchanged, or unresolved. Missing paths: ${missing.slice(0, 25).join(", ")}${missing.length > 25 ? "…" : ""}`,
+            retryable: false,
+          },
+        })
+      )
+    }
+    const result = await executeWithRetry(() =>
+      executor.proposeFileOrganization(input.data, conversationId)
+    )
+    return result.match(
+      (value) => ({
+        content: serializeToolResult({ ok: true as const, value }),
+        proposal: { planId: value.plan_id, revision: value.revision },
+      }),
+      (error) => ({
+        content: serializeToolResult({ ok: false as const, error }),
+      })
+    )
+  }
+
+  return content(JSON.stringify(invalidToolCall()))
 }
 
 function addUsage(total: AiUsage | undefined, next: AiUsage | undefined) {
@@ -123,14 +270,19 @@ async function* continueConversation(
   executor: FileToolExecutor,
   recorder: AiMessageRecorder | undefined,
   input: StreamConversationInput,
-  firstStream: AiStream
+  firstStream: AiStream,
+  conversationId: string
 ): AiStream {
   const messages: AiMessage[] = [...input.messages]
   let stream = firstStream
   let totalUsage: AiUsage | undefined
   let usageComplete = true
+  const session: FileToolSession = {
+    discoveredFiles: new Set(),
+    listCursors: new Map(),
+  }
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+  for (;;) {
     let assistantContent = ""
     const toolCalls: AiToolCall[] = []
     let finish: Extract<AiStreamEvent, { type: "finish" }> | undefined
@@ -178,6 +330,8 @@ async function* continueConversation(
         } else if (event.type === "tool-call") {
           toolCalls.push(event.call)
           yield result
+        } else if (event.type === "organization-proposal") {
+          yield result
         } else {
           finish = event
           usageComplete &&= event.usage !== undefined
@@ -219,30 +373,6 @@ async function* continueConversation(
         )
         return
       }
-      if (round === MAX_TOOL_ROUNDS - 1) {
-        const limitMessage =
-          "\n\nI reached the per-response file-operation limit before I could finish. Ask me to continue with another batch or narrow the scope."
-        const finalContent = `${assistantContent}${limitMessage}`
-        const content =
-          utf8ByteLength(finalContent) <= MAX_STORED_MESSAGE_BYTES
-            ? finalContent
-            : assistantContent
-        const persistenceError = await persistAssistant(content)
-        if (persistenceError) {
-          yield err(persistenceError)
-          return
-        }
-        if (content === finalContent) {
-          yield ok({ type: "text-delta", text: limitMessage })
-        }
-        yield ok({
-          type: "finish",
-          reason: "stop",
-          ...(usageComplete && totalUsage ? { usage: totalUsage } : {}),
-        })
-        return
-      }
-
       const callsToExecute = toolCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND)
 
       messages.push({
@@ -250,13 +380,21 @@ async function* continueConversation(
         content: assistantContent,
         toolCalls: callsToExecute,
       })
-      const toolResults = await Promise.all(
-        callsToExecute.map(async (call) => ({
-          role: "tool" as const,
-          toolCallId: call.id,
-          content: await executeToolCall(call, executor),
-        }))
+      const executions = await Promise.all(
+        callsToExecute.map((call) =>
+          executeToolCall(call, executor, conversationId, session)
+        )
       )
+      const toolResults = callsToExecute.map((call, index) => ({
+        role: "tool" as const,
+        toolCallId: call.id,
+        content: executions[index].content,
+      }))
+      for (const execution of executions) {
+        if (execution.proposal) {
+          yield ok({ type: "organization-proposal", ...execution.proposal })
+        }
+      }
       if (recorder) {
         // See persistAssistant: do not retry an uncertain write in finally.
         roundPersisted = true
@@ -306,7 +444,8 @@ export class FileToolConversationService implements AiProvider {
 
   streamConversation(
     input: StreamConversationInput,
-    recorder?: AiMessageRecorder
+    recorder?: AiMessageRecorder,
+    conversationId?: string
   ) {
     if (input.tools !== undefined) {
       return errAsync<AiStream, AiProviderError>({
@@ -323,7 +462,8 @@ export class FileToolConversationService implements AiProvider {
           this.executor,
           recorder,
           input,
-          stream
+          stream,
+          conversationId ?? ""
         )
       )
   }

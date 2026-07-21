@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react"
+import { useQuery as useConvexQuery } from "convex/react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { ArrowUpIcon, SquareIcon } from "lucide-react"
 
 import { ChatApiError, streamChat } from "./api"
+import { OrganizationPlanCard } from "./organization-plan-card"
+import { api } from "../../../convex/_generated/api"
+import type { Id } from "../../../convex/_generated/dataModel"
 import { MAX_CHAT_MESSAGE_LENGTH } from "./chat-transport"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -22,6 +26,7 @@ const toolActivityLabels: Record<string, string> = {
   search_files: "Searching your files…",
   find_exact_references: "Finding exact references…",
   read_file: "Reading a file…",
+  propose_file_organization: "Building a before-and-after plan…",
 }
 
 export function ChatPane({
@@ -44,6 +49,12 @@ export function ChatPane({
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
+  const plans = useConvexQuery(
+    api.organizationPlans.listForConversation,
+    conversationId
+      ? { conversationId: conversationId as Id<"chatConversations"> }
+      : "skip"
+  )
 
   useEffect(() => {
     endRef.current?.scrollIntoView()
@@ -51,7 +62,10 @@ export function ChatPane({
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
-  const sendMessage = async (content: string) => {
+  const sendMessage = async (
+    content: string,
+    proposalRevision?: { proposalId: string; feedback: string }
+  ) => {
     if (isStreaming) return
     const userId = crypto.randomUUID()
     const assistantId = crypto.randomUUID()
@@ -71,6 +85,7 @@ export function ChatPane({
       await streamChat({
         conversationId,
         message: content,
+        proposalRevision,
         signal: controller.signal,
         onEvent: (event) => {
           if (event.type === "conversation-id") {
@@ -88,6 +103,8 @@ export function ChatPane({
             )
           } else if (event.type === "tool-call") {
             setActivity(toolActivityLabels[event.name] ?? "Working…")
+          } else if (event.type === "organization-proposal") {
+            setActivity("Preparing your review…")
           } else if (event.type === "error") {
             setError(event.error.message)
           }
@@ -125,14 +142,47 @@ export function ChatPane({
       <div className="flex-1 overflow-y-auto">
         {messages.length === 0 ? (
           <div className="grid h-full place-items-center px-4">
-            <p className="text-lg text-muted-foreground">
-              Ask anything about your files.
-            </p>
+            <div className="flex flex-col items-center gap-4 text-center">
+              <div>
+                <p className="text-lg text-muted-foreground">
+                  Ask anything about your files.
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground/80">
+                  I can also inspect the current structure and suggest a cleaner
+                  one.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  void sendMessage(
+                    "Help me clean up and organize my files into a clearer structure."
+                  )
+                }
+              >
+                Organize my files
+              </Button>
+            </div>
           </div>
         ) : (
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-8">
             {messages.map((message) => (
               <Message key={message.id} message={message} />
+            ))}
+            {plans?.map((plan) => (
+              <OrganizationPlanCard
+                key={plan.planId}
+                plan={plan}
+                onRequestChanges={(planId, feedback) =>
+                  void sendMessage(`Requested changes: ${feedback}`, {
+                    proposalId: planId,
+                    feedback,
+                  })
+                }
+                onFilesChanged={() =>
+                  window.dispatchEvent(new Event("untie:files-changed"))
+                }
+              />
             ))}
             {activity !== null && (
               <p className="animate-pulse text-sm text-muted-foreground">

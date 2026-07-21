@@ -39,6 +39,7 @@ function tools(): FileToolExecutor {
     searchFiles: vi.fn(unavailable),
     findExactReferences: vi.fn(unavailable),
     readFile: vi.fn(unavailable),
+    proposeFileOrganization: vi.fn(unavailable),
   }
 }
 

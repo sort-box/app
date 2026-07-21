@@ -20,6 +20,9 @@ function parseEvent(data: string): ChatStreamEvent | null {
         typeof parsed.conversationId === "string") ||
       (parsed.type === "text-delta" && typeof parsed.text === "string") ||
       (parsed.type === "tool-call" && typeof parsed.name === "string") ||
+      (parsed.type === "organization-proposal" &&
+        typeof parsed.planId === "string" &&
+        typeof parsed.revision === "number") ||
       (parsed.type === "error" &&
         typeof parsed.error?.message === "string" &&
         typeof parsed.error.code === "string") ||
@@ -100,6 +103,7 @@ async function readEvents(
 export async function streamChat(input: {
   conversationId: string | null
   message: string
+  proposalRevision?: { proposalId: string; feedback: string }
   signal?: AbortSignal
   onEvent: (event: ChatStreamEvent) => void
 }): Promise<void> {
@@ -109,6 +113,14 @@ export async function streamChat(input: {
     body: JSON.stringify({
       conversation_id: input.conversationId,
       message: input.message,
+      ...(input.proposalRevision
+        ? {
+            proposal_revision: {
+              proposal_id: input.proposalRevision.proposalId,
+              feedback: input.proposalRevision.feedback,
+            },
+          }
+        : {}),
     }),
     signal: input.signal,
   })

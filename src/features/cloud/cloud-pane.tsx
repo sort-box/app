@@ -225,6 +225,13 @@ export function CloudPane() {
   }, [entries.length, directory.isFetchingNextPage, loadNextPageIfNeeded])
 
   useEffect(() => {
+    const refresh = () =>
+      void queryClient.invalidateQueries({ queryKey: ["cloud", "files"] })
+    window.addEventListener("untie:files-changed", refresh)
+    return () => window.removeEventListener("untie:files-changed", refresh)
+  }, [queryClient])
+
+  useEffect(() => {
     nextPageRequestPending.current = false
     setSelectedIds(new Set())
     if (scrollContainer.current) scrollContainer.current.scrollTop = 0

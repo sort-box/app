@@ -1,4 +1,7 @@
 import { ResultAsync, errAsync, okAsync } from "neverthrow"
+import { ConvexHttpClient } from "convex/browser"
+
+import { api } from "../../../../../convex/_generated/api"
 
 import type {
   FileApiError,
@@ -29,11 +32,13 @@ class GatewayRequestError {
 }
 
 function gatewayError(
-  code: FileToolGatewayError["code"]
+  code: FileToolGatewayError["code"],
+  message?: string
 ): FileToolGatewayError {
   return {
     code,
     retryable: code === "RATE_LIMITED" || code === "UNAVAILABLE",
+    ...(message ? { message } : {}),
   }
 }
 
@@ -78,6 +83,9 @@ function indexStatus(
 
 export type ConvexFileToolGatewayContext = {
   authToken: string
+  getAuthToken?: () => Promise<string | null>
+  client?: ConvexHttpClient
+  convexUrl?: string
   convexSiteUrl: string
   serviceSecret: string
 }
@@ -156,21 +164,75 @@ export class ConvexFileToolGateway implements FileToolGateway {
     }))
   }
 
+  proposeOrganization(input: {
+    conversationId: string
+    previousPlanId?: string
+    summary: string
+    warnings: readonly string[]
+    operations: readonly { beforePath: string; afterPath: string }[]
+  }) {
+    return ResultAsync.fromPromise(
+      (async () => {
+        const client =
+          this.context.client ??
+          new ConvexHttpClient(
+            this.context.convexUrl ??
+              this.context.convexSiteUrl.replace(".site", ".cloud")
+          )
+        const authToken =
+          (await this.context.getAuthToken?.()) ?? this.context.authToken
+        client.setAuth(authToken)
+        const result = await client.mutation(api.organizationPlans.propose, {
+          conversationId: input.conversationId as never,
+          ...(input.previousPlanId
+            ? { previousPlanId: input.previousPlanId as never }
+            : {}),
+          summary: input.summary,
+          warnings: [...input.warnings],
+          operations: input.operations.map((operation) => ({ ...operation })),
+        })
+        if (!result.ok) {
+          const code =
+            result.error.code === "PLAN_NOT_FOUND"
+              ? "FILE_NOT_FOUND"
+              : result.error.code === "PLAN_NOT_APPLICABLE" ||
+                  result.error.code === "PLAN_STALE" ||
+                  result.error.code === "PATH_CONFLICT" ||
+                  result.error.code === "SCOPE_TOO_LARGE"
+                ? result.error.code
+                : "INVALID_INPUT"
+          throw new GatewayRequestError(
+            gatewayError(code, result.error.message)
+          )
+        }
+        return {
+          planId: result.value.planId as string,
+          revision: result.value.revision,
+        }
+      })(),
+      mapRequestError
+    )
+  }
+
   private request<T>(
     body: Record<string, unknown>,
     schema: z.ZodType<T>
   ): ResultAsync<T, FileToolGatewayError> {
     const siteUrl = this.context.convexSiteUrl.replace(/\/$/, "")
     return ResultAsync.fromPromise(
-      this.fetch(`${siteUrl}/internal/ai/files`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.context.authToken}`,
-          "Content-Type": "application/json",
-          "x-file-service-secret": this.context.serviceSecret,
-        },
-        body: JSON.stringify(internalAiFileRequestSchema.parse(body)),
-      }).then(async (response) => {
+      (async () => {
+        const authToken =
+          (await this.context.getAuthToken?.()) ?? this.context.authToken
+        return await this.fetch(`${siteUrl}/internal/ai/files`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            "Content-Type": "application/json",
+            "x-file-service-secret": this.context.serviceSecret,
+          },
+          body: JSON.stringify(internalAiFileRequestSchema.parse(body)),
+        })
+      })().then(async (response) => {
         if (!response.ok) {
           const failure = (await response.json().catch(() => null)) as {
             code?: unknown

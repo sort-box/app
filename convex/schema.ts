@@ -30,6 +30,17 @@ export const embeddingErrorCode = v.union(
   v.literal("EMBEDDING_FAILED")
 )
 
+export const organizationPlanStatus = v.union(
+  v.literal("draft"),
+  v.literal("superseded"),
+  v.literal("applied"),
+  v.literal("rejected"),
+  v.literal("stale"),
+  v.literal("undone"),
+  v.literal("partially_undone"),
+  v.literal("failed")
+)
+
 export default defineSchema({
   chatConversations: defineTable({
     ownerTokenIdentifier: v.string(),
@@ -46,6 +57,41 @@ export default defineSchema({
     sequence: v.number(),
     payload: storedAiMessage,
   }).index("by_conversationId_and_sequence", ["conversationId", "sequence"]),
+  organizationPlans: defineTable({
+    ownerTokenIdentifier: v.string(),
+    conversationId: v.id("chatConversations"),
+    previousPlanId: v.optional(v.id("organizationPlans")),
+    revision: v.number(),
+    status: organizationPlanStatus,
+    summary: v.string(),
+    warnings: v.array(v.string()),
+    createdAt: v.number(),
+    appliedAt: v.optional(v.number()),
+    undoneAt: v.optional(v.number()),
+  })
+    .index("by_conversationId_and_createdAt", ["conversationId", "createdAt"])
+    .index("by_ownerTokenIdentifier_and_conversationId", [
+      "ownerTokenIdentifier",
+      "conversationId",
+    ]),
+  organizationPlanOperations: defineTable({
+    planId: v.id("organizationPlans"),
+    ownerTokenIdentifier: v.string(),
+    entryId: v.id("fileEntries"),
+    fileId: v.optional(v.id("files")),
+    kind: v.union(v.literal("file"), v.literal("directory")),
+    beforePath: v.string(),
+    afterPath: v.string(),
+    undoStatus: v.optional(
+      v.union(v.literal("restored"), v.literal("skipped"))
+    ),
+    undoReason: v.optional(v.string()),
+  })
+    .index("by_planId", ["planId"])
+    .index("by_ownerTokenIdentifier_and_planId", [
+      "ownerTokenIdentifier",
+      "planId",
+    ]),
   files: defineTable({
     ownerClerkUserId: v.string(),
     ownerTokenIdentifier: v.string(),
