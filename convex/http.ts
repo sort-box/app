@@ -1,7 +1,22 @@
 import { httpRouter } from "convex/server"
 
+import {
+  chatHistoryRequestSchema,
+  chatHistoryStartResponseSchema,
+} from "../src/server/ai/chat-history-contract"
+import {
+  internalAiExactResponseSchema,
+  internalAiFileRequestSchema,
+  internalAiReadResponseSchema,
+  internalAiSearchResponseSchema,
+  internalAiUsageRequestSchema,
+} from "../src/server/ai/internal-ai-http-contract"
 import { internal } from "./_generated/api"
 import { httpAction } from "./_generated/server"
+import {
+  findExactReferencesInOwnedFiles,
+  searchOwnedFiles,
+} from "./aiFileTools"
 
 const http = httpRouter()
 
@@ -89,16 +104,13 @@ http.route({
     }
     const identity = await ctx.auth.getUserIdentity()
     if (!identity) return new Response("Unauthorized", { status: 401 })
-    const input = (await request.json().catch(() => null)) as Record<
-      string,
-      unknown
-    > | null
-    if (
-      !input ||
-      (input.operation !== "check" && input.operation !== "record")
-    ) {
+    const parsed = internalAiUsageRequestSchema.safeParse(
+      await request.json().catch(() => null)
+    )
+    if (!parsed.success) {
       return new Response("Invalid request", { status: 400 })
     }
+    const input = parsed.data
     const ownerTokenIdentifier = identity.tokenIdentifier
     try {
       if (input.operation === "check") {
@@ -106,12 +118,6 @@ http.route({
           ownerTokenIdentifier,
         })
         return Response.json(null)
-      }
-      if (
-        typeof input.inputTokens !== "number" ||
-        typeof input.outputTokens !== "number"
-      ) {
-        return new Response("Invalid request", { status: 400 })
       }
       await ctx.runMutation(internal.aiUsage.record, {
         ownerTokenIdentifier,
@@ -121,6 +127,142 @@ http.route({
       return Response.json(null)
     } catch (error) {
       return aiUsageError(error)
+    }
+  }),
+})
+
+function aiFileToolError(error: unknown): Response {
+  const message = error instanceof Error ? error.message : ""
+  if (message.includes("FILE_NOT_FOUND")) {
+    return Response.json({ code: "FILE_NOT_FOUND" }, { status: 404 })
+  }
+  if (message.includes("CONTENT_NOT_INDEXED")) {
+    return Response.json({ code: "CONTENT_NOT_INDEXED" }, { status: 409 })
+  }
+  if (message.includes("ArgumentValidationError")) {
+    return Response.json({ code: "INVALID_INPUT" }, { status: 400 })
+  }
+  if (message.includes("INVALID_EXACT_CURSOR")) {
+    return Response.json({ code: "INVALID_INPUT" }, { status: 400 })
+  }
+  return Response.json({ code: "UNAVAILABLE" }, { status: 503 })
+}
+
+function chatHistoryError(error: unknown): Response {
+  const message = error instanceof Error ? error.message : ""
+  if (message.includes("CHAT_NOT_FOUND")) {
+    return Response.json({ code: "CHAT_NOT_FOUND" }, { status: 404 })
+  }
+  if (
+    message.includes("INVALID_CHAT_MESSAGES") ||
+    message.includes("ArgumentValidationError")
+  ) {
+    return Response.json({ code: "INVALID_INPUT" }, { status: 400 })
+  }
+  return Response.json({ code: "UNAVAILABLE" }, { status: 503 })
+}
+
+http.route({
+  path: "/internal/ai/chat-history",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!(await serviceAuthorized(request))) {
+      return new Response("Unauthorized", { status: 401 })
+    }
+    const identity = await ctx.auth.getUserIdentity()
+    if (!identity) return new Response("Unauthorized", { status: 401 })
+    const parsed = chatHistoryRequestSchema.safeParse(
+      await request.json().catch(() => null)
+    )
+    if (!parsed.success) {
+      return new Response("Invalid request", { status: 400 })
+    }
+    const input = parsed.data
+
+    try {
+      if (input.operation === "start") {
+        return Response.json(
+          chatHistoryStartResponseSchema.parse(
+            await ctx.runMutation(internal.chatHistory.startTurn, {
+              ownerTokenIdentifier: identity.tokenIdentifier,
+              conversationId: input.conversationId,
+              content: input.content,
+            })
+          )
+        )
+      }
+      if (input.operation === "append") {
+        await ctx.runMutation(internal.chatHistory.appendMessages, {
+          ownerTokenIdentifier: identity.tokenIdentifier,
+          conversationId: input.conversationId,
+          messages: input.messages,
+        })
+        return Response.json(null)
+      }
+      return new Response("Invalid request", { status: 400 })
+    } catch (error) {
+      return chatHistoryError(error)
+    }
+  }),
+})
+
+http.route({
+  path: "/internal/ai/files",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!(await serviceAuthorized(request))) {
+      return new Response("Unauthorized", { status: 401 })
+    }
+    const identity = await ctx.auth.getUserIdentity()
+    if (!identity) return new Response("Unauthorized", { status: 401 })
+
+    const parsed = internalAiFileRequestSchema.safeParse(
+      await request.json().catch(() => null)
+    )
+    if (!parsed.success) {
+      return new Response("Invalid request", { status: 400 })
+    }
+    const input = parsed.data
+
+    try {
+      if (input.operation === "search") {
+        return Response.json(
+          internalAiSearchResponseSchema.parse(
+            await searchOwnedFiles(ctx, {
+              ownerTokenIdentifier: identity.tokenIdentifier,
+              query: input.query,
+              limit: input.limit,
+            })
+          )
+        )
+      }
+      if (input.operation === "findExact") {
+        return Response.json(
+          internalAiExactResponseSchema.parse(
+            await findExactReferencesInOwnedFiles(ctx, {
+              ownerTokenIdentifier: identity.tokenIdentifier,
+              query: input.query,
+              caseSensitive: input.caseSensitive,
+              cursor: input.cursor,
+            })
+          )
+        )
+      }
+      if (input.operation === "read") {
+        return Response.json(
+          internalAiReadResponseSchema.parse(
+            await ctx.runQuery(internal.aiFileTools.readOwnedFileChunks, {
+              ownerTokenIdentifier: identity.tokenIdentifier,
+              fileId: input.fileId,
+              cursor: input.cursor,
+              numItems: input.numItems,
+            })
+          )
+        )
+      }
+      return new Response("Invalid request", { status: 400 })
+    } catch (error) {
+      return aiFileToolError(error)
     }
   }),
 })

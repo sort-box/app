@@ -84,6 +84,7 @@ export const openApiDocument = {
   servers: [{ url: "/", description: "Current application deployment" }],
   tags: [
     { name: "Files", description: "Authenticated file operations." },
+    { name: "Chat", description: "Authenticated assistant conversation." },
     {
       name: "Maintenance",
       description: "Internal service-to-service maintenance operations.",
@@ -445,6 +446,64 @@ export const openApiDocument = {
         },
       },
     },
+    "/api/chat": {
+      post: {
+        tags: ["Chat"],
+        operationId: "streamChat",
+        summary: "Stream an assistant reply",
+        description:
+          "Starts or continues a server-owned conversation and streams the assistant's reply as Server-Sent Events. The first event accepts the turn with `conversation-id`; exactly one terminal `done` or `error` event follows any `text-delta` and `tool-call` events.",
+        security: [{ clerkSession: [] }],
+        requestBody: jsonBody({
+          $ref: "#/components/schemas/ChatRequest",
+        }),
+        responses: {
+          "200": {
+            description: "An event stream of assistant output.",
+            content: {
+              "text/event-stream": { schema: { type: "string" } },
+            },
+          },
+          "502": errorResponse,
+          ...authenticatedErrors,
+        },
+      },
+    },
+    "/internal/ai/chat-history": {
+      post: {
+        tags: ["Maintenance"],
+        operationId: "manageAiChatHistory",
+        summary: "Start or append trusted AI conversation history",
+        description:
+          "Trusted application-server boundary that derives the owner from the bearer token and stores user, assistant, tool-call, and tool-result messages.",
+        servers: [
+          {
+            url: "https://{deployment}.convex.site",
+            description: "Convex site deployment",
+            variables: {
+              deployment: {
+                default: "your-deployment",
+                description: "Convex deployment name.",
+              },
+            },
+          },
+        ],
+        security: [{ fileServiceSecret: [], bearerAuth: [] }],
+        requestBody: jsonBody({
+          $ref: "#/components/schemas/TrustedAiChatHistoryOperation",
+        }),
+        responses: {
+          "200": {
+            description: "The conversation history operation completed.",
+            content: { "application/json": { schema: {} } },
+          },
+          "400": errorResponse,
+          "401": errorResponse,
+          "404": errorResponse,
+          "503": errorResponse,
+        },
+      },
+    },
     "/internal/ai/usage": {
       post: {
         tags: ["Maintenance"],
@@ -479,6 +538,52 @@ export const openApiDocument = {
           "401": errorResponse,
           "409": errorResponse,
           "429": errorResponse,
+          "503": errorResponse,
+        },
+      },
+    },
+    "/internal/ai/files": {
+      post: {
+        tags: ["Maintenance"],
+        operationId: "queryAiFileData",
+        summary: "Search or read indexed file content for AI tools",
+        description:
+          "Trusted application-server boundary that derives the user from the bearer token and serves semantic search candidates or extracted file chunks.",
+        servers: [
+          {
+            url: "https://{deployment}.convex.site",
+            description: "Convex site deployment",
+            variables: {
+              deployment: {
+                default: "your-deployment",
+                description: "Convex deployment name.",
+              },
+            },
+          },
+        ],
+        security: [{ fileServiceSecret: [], bearerAuth: [] }],
+        requestBody: jsonBody({
+          $ref: "#/components/schemas/TrustedAiFileOperation",
+        }),
+        responses: {
+          "200": {
+            description: "The file data operation completed.",
+            content: {
+              "application/json": {
+                schema: {
+                  oneOf: [
+                    { type: "array" },
+                    { $ref: "#/components/schemas/TrustedAiExactResponse" },
+                    { type: "object" },
+                  ],
+                },
+              },
+            },
+          },
+          "400": errorResponse,
+          "401": errorResponse,
+          "404": errorResponse,
+          "409": errorResponse,
           "503": errorResponse,
         },
       },
@@ -797,6 +902,211 @@ export const openApiDocument = {
           message: { type: "string" },
           retryable: { type: "boolean" },
           retryAfter: { type: "integer", minimum: 1 },
+        },
+      },
+      ChatRequest: {
+        type: "object",
+        additionalProperties: false,
+        required: ["message"],
+        properties: {
+          conversation_id: { type: ["string", "null"] },
+          message: { type: "string", minLength: 1, maxLength: 16000 },
+        },
+      },
+      StoredAiMessage: {
+        oneOf: [
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["role", "content"],
+            properties: {
+              role: { type: "string", const: "user" },
+              content: { type: "string", maxLength: 16000 },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["role", "content"],
+            properties: {
+              role: { type: "string", const: "assistant" },
+              content: { type: "string", maxLength: 16000 },
+              toolCalls: {
+                type: "array",
+                maxItems: 8,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["id", "name", "argumentsJson"],
+                  properties: {
+                    id: { type: "string" },
+                    name: { type: "string" },
+                    argumentsJson: { type: "string", maxLength: 16000 },
+                  },
+                },
+              },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["role", "toolCallId", "content"],
+            properties: {
+              role: { type: "string", const: "tool" },
+              toolCallId: { type: "string" },
+              content: { type: "string", maxLength: 64000 },
+            },
+          },
+        ],
+        discriminator: { propertyName: "role" },
+      },
+      TrustedAiChatHistoryOperation: {
+        oneOf: [
+          trustedOperation("start", ["conversationId", "content"], {
+            conversationId: { type: ["string", "null"] },
+            content: { type: "string", minLength: 1, maxLength: 16000 },
+          }),
+          trustedOperation("append", ["conversationId", "messages"], {
+            conversationId: { type: "string" },
+            messages: {
+              type: "array",
+              minItems: 1,
+              maxItems: 10,
+              items: { $ref: "#/components/schemas/StoredAiMessage" },
+            },
+          }),
+        ],
+        discriminator: { propertyName: "operation" },
+      },
+      TrustedAiFileOperation: {
+        oneOf: [
+          trustedOperation("search", ["query", "limit"], {
+            query: { type: "string", minLength: 1 },
+            limit: { type: "integer", minimum: 1, maximum: 30 },
+          }),
+          trustedOperation("findExact", ["query", "caseSensitive", "cursor"], {
+            query: { type: "string", minLength: 1 },
+            caseSensitive: { type: "boolean" },
+            cursor: { type: ["string", "null"] },
+          }),
+          trustedOperation("read", ["fileId", "cursor", "numItems"], {
+            fileId: { type: "string" },
+            cursor: { type: ["string", "null"] },
+            numItems: { type: "integer", minimum: 1, maximum: 20 },
+          }),
+        ],
+        discriminator: { propertyName: "operation" },
+      },
+      TrustedAiSourceLocation: {
+        oneOf: [
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "page"],
+            properties: {
+              kind: { type: "string", const: "page" },
+              page: { type: "integer", minimum: 0 },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "slide"],
+            properties: {
+              kind: { type: "string", const: "slide" },
+              slide: { type: "integer", minimum: 0 },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "sheet", "row_start", "row_end"],
+            properties: {
+              kind: { type: "string", const: "sheet" },
+              sheet: { type: "string" },
+              row_start: { type: "integer", minimum: 0 },
+              row_end: { type: "integer", minimum: 0 },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "start", "end"],
+            properties: {
+              kind: { type: "string", const: "text" },
+              start: { type: "integer", minimum: 0 },
+              end: { type: "integer", minimum: 0 },
+            },
+          },
+        ],
+        discriminator: { propertyName: "kind" },
+      },
+      TrustedAiExactResponse: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "matches",
+          "scannedReadyFiles",
+          "scannedIndexedFiles",
+          "unsearchableReadyFiles",
+          "complete",
+        ],
+        properties: {
+          matches: {
+            type: "array",
+            maxItems: 10,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: [
+                "fileId",
+                "path",
+                "occurrenceCount",
+                "locations",
+                "omittedLocationCount",
+              ],
+              properties: {
+                fileId: { type: "string" },
+                path: { type: "string" },
+                occurrenceCount: { type: "integer", minimum: 1 },
+                locations: {
+                  type: "array",
+                  maxItems: 20,
+                  description: "Representative matching source locations.",
+                  items: {
+                    $ref: "#/components/schemas/TrustedAiSourceLocation",
+                  },
+                },
+                omittedLocationCount: {
+                  type: "integer",
+                  minimum: 0,
+                  description:
+                    "Additional matching locations omitted from this bounded sample.",
+                },
+              },
+            },
+          },
+          scannedReadyFiles: { type: "integer", minimum: 0 },
+          scannedIndexedFiles: { type: "integer", minimum: 0 },
+          unsearchableReadyFiles: { type: "integer", minimum: 0 },
+          complete: {
+            type: "boolean",
+            description:
+              "True when the ready-file corpus was traversed. Exhaustiveness additionally requires no warnings and zero unsearchable files.",
+          },
+          nextCursor: {
+            type: "string",
+            description:
+              "Opaque signed continuation state bound to the owner and exact query.",
+          },
+          warnings: {
+            type: "array",
+            uniqueItems: true,
+            items: {
+              type: "string",
+              enum: ["LOCATIONS_TRUNCATED", "CORPUS_CHANGED"],
+            },
+          },
         },
       },
       TrustedAiUsageOperation: {

@@ -6,7 +6,12 @@ import {
   useClerk,
   useUser,
 } from "@clerk/tanstack-react-start"
-import { Authenticated, AuthLoading, Unauthenticated } from "convex/react"
+import {
+  Authenticated,
+  AuthLoading,
+  Unauthenticated,
+  useQuery,
+} from "convex/react"
 import {
   ArrowRightIcon,
   FolderIcon,
@@ -16,6 +21,10 @@ import {
   SquarePenIcon,
 } from "lucide-react"
 
+import { api } from "../../convex/_generated/api"
+import type { Id } from "../../convex/_generated/dataModel"
+import { ChatList } from "@/features/chat/chat-list"
+import { ChatPane } from "@/features/chat/chat-pane"
 import { CloudPane } from "@/features/cloud/cloud-pane"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -96,8 +105,56 @@ const sections = [
 
 type SectionId = (typeof sections)[number]["id"]
 
-function renderSection(section: SectionId): ReactNode {
-  return section === "cloud" ? <CloudPane /> : undefined
+type ChatState = {
+  paneKey: number
+  initialConversationId: Id<"chatConversations"> | null
+  activeConversationId: Id<"chatConversations"> | null
+}
+
+function renderSection(
+  section: SectionId,
+  chat: ChatState,
+  onConversationCreated: (conversationId: string) => void
+): ReactNode {
+  switch (section) {
+    case "chat":
+      return (
+        <ChatSection
+          chat={chat}
+          onConversationCreated={onConversationCreated}
+        />
+      )
+    case "cloud":
+      return <CloudPane />
+  }
+}
+
+function ChatSection({
+  chat,
+  onConversationCreated,
+}: {
+  chat: ChatState
+  onConversationCreated: (conversationId: string) => void
+}) {
+  const history = useQuery(
+    api.chatHistory.listMessages,
+    chat.initialConversationId
+      ? { conversationId: chat.initialConversationId }
+      : "skip"
+  )
+  if (chat.initialConversationId && history === undefined) return null
+
+  return (
+    <ChatPane
+      key={chat.paneKey}
+      conversationId={chat.initialConversationId}
+      initialMessages={(history ?? []).map((message) => ({
+        id: crypto.randomUUID(),
+        ...message,
+      }))}
+      onConversationCreated={onConversationCreated}
+    />
+  )
 }
 
 function Shell({
@@ -105,10 +162,28 @@ function Shell({
   renderSection,
 }: {
   account: ReactNode
-  renderSection?: (section: SectionId) => ReactNode
+  renderSection?: (
+    section: SectionId,
+    chat: ChatState,
+    onConversationCreated: (conversationId: string) => void
+  ) => ReactNode
 }) {
   const [activeSection, setActiveSection] = useState<SectionId>("chat")
+  const [chat, setChat] = useState<ChatState>({
+    paneKey: 0,
+    initialConversationId: null,
+    activeConversationId: null,
+  })
   const active = sections.find((section) => section.id === activeSection)
+
+  const openChat = (conversationId: Id<"chatConversations"> | null) => {
+    setActiveSection("chat")
+    setChat((current) => ({
+      paneKey: current.paneKey + 1,
+      initialConversationId: conversationId,
+      activeConversationId: conversationId,
+    }))
+  }
 
   return (
     <div className="h-svh">
@@ -134,7 +209,9 @@ function Shell({
                   key={id}
                   variant="ghost"
                   data-active={activeSection === id}
-                  onClick={() => setActiveSection(id)}
+                  onClick={() =>
+                    id === "chat" ? openChat(null) : setActiveSection(id)
+                  }
                   className="justify-start font-normal data-[active=true]:bg-foreground/10 data-[active=true]:text-sidebar-accent-foreground"
                 >
                   <Icon
@@ -145,6 +222,14 @@ function Shell({
                 </Button>
               ))}
             </nav>
+            {renderSection && (
+              <ChatList
+                selectedConversationId={
+                  activeSection === "chat" ? chat.activeConversationId : null
+                }
+                onSelect={openChat}
+              />
+            )}
             <div className="mt-auto">
               <Separator />
               <div className="p-2">{account}</div>
@@ -153,7 +238,12 @@ function Shell({
         </ResizablePanel>
         <ResizableHandle withHandle />
         <ResizablePanel className="overflow-hidden!">
-          {renderSection?.(activeSection) ?? (
+          {renderSection?.(activeSection, chat, (conversationId) =>
+            setChat((current) => ({
+              ...current,
+              activeConversationId: conversationId as Id<"chatConversations">,
+            }))
+          ) ?? (
             <main className="grid h-full place-items-center text-sm text-muted-foreground">
               {active?.label}
             </main>
