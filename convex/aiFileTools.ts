@@ -2,11 +2,15 @@ import type { EntryId } from "@convex-dev/rag"
 import { paginationOptsValidator } from "convex/server"
 import { ConvexError, v } from "convex/values"
 
+import {
+  MAX_TOOL_RESULT_OUTPUT_BYTES,
+  utf8ByteLength,
+} from "../src/server/ai/chat-history-contract"
 import { fileChunkSource } from "../src/server/ai/file-chunk-metadata"
 import type { FileSourceLocation } from "../src/server/ai/file-tools"
 import { internal } from "./_generated/api"
 import type { Id } from "./_generated/dataModel"
-import { internalQuery, type ActionCtx } from "./_generated/server"
+import { env, internalQuery, type ActionCtx } from "./_generated/server"
 import { documentRag } from "./embeddings/rag"
 
 const locationValidator = v.union(
@@ -41,22 +45,67 @@ export type ExactReferenceResult = {
     path: string
     occurrenceCount: number
     locations: FileSourceLocation[]
+    omittedLocationCount: number
   }>
+  scannedReadyFiles: number
   scannedIndexedFiles: number
-  totalReadyFiles: number
   unsearchableReadyFiles: number
   complete: boolean
   nextCursor?: string
+  warnings?: Array<"LOCATIONS_TRUNCATED" | "CORPUS_CHANGED">
 }
 
-export const getOwnedReadyFileCoveragePage = internalQuery({
+type ExactWarning = "LOCATIONS_TRUNCATED" | "CORPUS_CHANGED"
+
+type ExactActiveFile = {
+  fileId: string
+  entryId: string
+  chunkCursor: string | null
+  occurrenceCount: number
+  matchingLocationCount: number
+  locations: FileSourceLocation[]
+  suffix: string
+  boundary: string | null
+}
+
+type ExactCursorState = {
+  version: 1
+  pageCursor: string | null
+  fileOffset: number
+  scannedReadyFiles: number
+  scannedIndexedFiles: number
+  unsearchableReadyFiles: number
+  warnings: ExactWarning[]
+  activeFile?: ExactActiveFile
+}
+
+type ExactReadyFile = {
+  fileId: Id<"files">
+  path: string
+  entryId?: string
+}
+
+const EXACT_FILES_PER_PAGE = 25
+const EXACT_CHUNKS_PER_PAGE = 200
+const MAX_EXACT_CHUNKS = 2_000
+const MAX_EXACT_SOURCE_BYTES = 2 * 1024 * 1024
+const MAX_EXACT_COMPONENT_CALLS = 12
+const MAX_EXACT_MATCHES = 10
+const MAX_EXACT_LOCATIONS_PER_FILE = 20
+
+export const getOwnedReadyFilesPage = internalQuery({
   args: {
     ownerTokenIdentifier: v.string(),
     paginationOpts: paginationOptsValidator,
   },
   returns: v.object({
-    searchable: v.number(),
-    unsearchable: v.number(),
+    page: v.array(
+      v.object({
+        fileId: v.id("files"),
+        path: v.string(),
+        entryId: v.optional(v.string()),
+      })
+    ),
     isDone: v.boolean(),
     continueCursor: v.string(),
   }),
@@ -69,43 +118,128 @@ export const getOwnedReadyFileCoveragePage = internalQuery({
           .eq("status", "ready")
       )
       .paginate(args.paginationOpts)
-    const searchable = page.page.filter(
-      (file) => file.embeddingStatus === "ready" && file.embeddingEntryId
-    ).length
     return {
-      searchable,
-      unsearchable: page.page.length - searchable,
+      page: page.page.map((file) => ({
+        fileId: file._id,
+        path: file.path ?? `/${file.originalName}`,
+        ...(file.embeddingStatus === "ready" && file.embeddingEntryId
+          ? { entryId: file.embeddingEntryId }
+          : {}),
+      })),
       isDone: page.isDone,
       continueCursor: page.continueCursor,
     }
   },
 })
 
-async function ownedReadyFileCoverage(
-  ctx: ActionCtx,
+function base64Url(bytes: Uint8Array): string {
+  let binary = ""
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "")
+}
+
+function fromBase64Url(value: string): Uint8Array {
+  const base64 = value.replaceAll("-", "+").replaceAll("_", "/")
+  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=")
+  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0))
+}
+
+async function cursorSignature(value: string): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(env.FILE_SERVICE_SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  )
+  return new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value))
+  )
+}
+
+function cursorBinding(input: {
   ownerTokenIdentifier: string
-): Promise<{ totalReadyFiles: number; unsearchableReadyFiles: number }> {
-  let cursor: string | null = null
-  let searchable = 0
-  let unsearchable = 0
-  while (true) {
-    const page: {
-      searchable: number
-      unsearchable: number
-      isDone: boolean
-      continueCursor: string
-    } = await ctx.runQuery(internal.aiFileTools.getOwnedReadyFileCoveragePage, {
-      ownerTokenIdentifier,
-      paginationOpts: { cursor, numItems: 100 },
-    })
-    searchable += page.searchable
-    unsearchable += page.unsearchable
-    if (page.isDone) break
-    cursor = page.continueCursor
+  query: string
+  caseSensitive: boolean
+}): string {
+  return JSON.stringify({
+    version: 1,
+    ownerTokenIdentifier: input.ownerTokenIdentifier,
+    query: input.query,
+    caseSensitive: input.caseSensitive,
+  })
+}
+
+async function encodeExactCursor(
+  state: ExactCursorState,
+  input: { ownerTokenIdentifier: string; query: string; caseSensitive: boolean }
+): Promise<string> {
+  const payload = base64Url(new TextEncoder().encode(JSON.stringify(state)))
+  const signature = await cursorSignature(
+    `${cursorBinding(input)}\u0000${payload}`
+  )
+  return `${payload}.${base64Url(signature)}`
+}
+
+function validCursorState(value: unknown): value is ExactCursorState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const state = value as Record<string, unknown>
+  return (
+    state.version === 1 &&
+    (state.pageCursor === null || typeof state.pageCursor === "string") &&
+    typeof state.fileOffset === "number" &&
+    Number.isInteger(state.fileOffset) &&
+    state.fileOffset >= 0 &&
+    typeof state.scannedReadyFiles === "number" &&
+    typeof state.scannedIndexedFiles === "number" &&
+    typeof state.unsearchableReadyFiles === "number" &&
+    Array.isArray(state.warnings)
+  )
+}
+
+async function decodeExactCursor(
+  cursor: string | null,
+  input: { ownerTokenIdentifier: string; query: string; caseSensitive: boolean }
+): Promise<ExactCursorState> {
+  if (!cursor) {
+    return {
+      version: 1,
+      pageCursor: null,
+      fileOffset: 0,
+      scannedReadyFiles: 0,
+      scannedIndexedFiles: 0,
+      unsearchableReadyFiles: 0,
+      warnings: [],
+    }
   }
-  return {
-    totalReadyFiles: searchable + unsearchable,
-    unsearchableReadyFiles: unsearchable,
+  try {
+    const [payload, presented, extra] = cursor.split(".")
+    if (!payload || !presented || extra !== undefined) throw new Error()
+    const expected = await cursorSignature(
+      `${cursorBinding(input)}\u0000${payload}`
+    )
+    const payloadBytes = fromBase64Url(payload)
+    const actual = fromBase64Url(presented)
+    if (
+      base64Url(payloadBytes) !== payload ||
+      base64Url(actual) !== presented
+    ) {
+      throw new Error()
+    }
+    if (actual.length !== expected.length) throw new Error()
+    let difference = 0
+    for (let index = 0; index < expected.length; index += 1) {
+      difference |= expected[index] ^ actual[index]
+    }
+    if (difference !== 0) throw new Error()
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(payloadBytes))
+    if (!validCursorState(parsed)) throw new Error()
+    return parsed
+  } catch {
+    throw new ConvexError("INVALID_EXACT_CURSOR")
   }
 }
 
@@ -116,11 +250,46 @@ function countOccurrences(text: string, query: string): number {
     const index = text.indexOf(query, offset)
     if (index === -1) return count
     count += 1
-    offset = index + query.length
+    offset = index + 1
   }
 }
 
-/** Literal, file-deduplicated search over a page of the caller's RAG entries. */
+function boundaryOccurrences(
+  suffix: string,
+  text: string,
+  query: string
+): number {
+  if (!suffix || query.length < 2) return 0
+  const prefix = text.slice(0, query.length - 1)
+  const combined = suffix + prefix
+  let count = 0
+  let offset = 0
+  while (true) {
+    const index = combined.indexOf(query, offset)
+    if (index === -1) return count
+    if (index < suffix.length && index + query.length > suffix.length) {
+      count += 1
+    }
+    offset = index + 1
+  }
+}
+
+function sourceBoundary(
+  headingPath: readonly string[],
+  location: FileSourceLocation
+): string {
+  const heading = headingPath.join("\u001f")
+  if (location.kind === "page") return `page:${location.page}:${heading}`
+  if (location.kind === "slide") return `slide:${location.slide}:${heading}`
+  if (location.kind === "sheet") return `sheet:${location.sheet}:${heading}`
+  return `text:${heading}`
+}
+
+function addWarning(state: ExactCursorState, warning: ExactWarning) {
+  if (!state.warnings.includes(warning)) state.warnings.push(warning)
+}
+
+/** Literal search with signed continuation state and fixed per-call budgets. */
 export async function findExactReferencesInOwnedFiles(
   ctx: ActionCtx,
   input: {
@@ -128,81 +297,166 @@ export async function findExactReferencesInOwnedFiles(
     query: string
     caseSensitive: boolean
     cursor: string | null
-    limit: number
   }
 ): Promise<ExactReferenceResult> {
-  const namespace = await documentRag.getNamespace(ctx, {
-    namespace: input.ownerTokenIdentifier,
+  const state = await decodeExactCursor(input.cursor, input)
+  const needle = input.caseSensitive ? input.query : input.query.toLowerCase()
+  const matches: ExactReferenceResult["matches"] = []
+  let componentCalls = 1
+  let chunksScanned = 0
+  let sourceBytes = 0
+  let completedMatches = 0
+  let stopped = false
+
+  const filesPage: {
+    page: ExactReadyFile[]
+    isDone: boolean
+    continueCursor: string
+  } = await ctx.runQuery(internal.aiFileTools.getOwnedReadyFilesPage, {
+    ownerTokenIdentifier: input.ownerTokenIdentifier,
+    paginationOpts: {
+      cursor: state.pageCursor,
+      numItems: EXACT_FILES_PER_PAGE,
+    },
   })
-  const coverage = await ownedReadyFileCoverage(ctx, input.ownerTokenIdentifier)
-  if (!namespace) {
-    return {
-      matches: [],
-      scannedIndexedFiles: 0,
-      ...coverage,
-      complete: true,
-    }
+
+  if (state.activeFile && !filesPage.page[state.fileOffset]) {
+    addWarning(state, "CORPUS_CHANGED")
+    state.activeFile = undefined
   }
 
-  const entries = await documentRag.list(ctx, {
-    namespaceId: namespace.namespaceId,
-    status: "ready",
-    paginationOpts: { cursor: input.cursor, numItems: input.limit },
-  })
-  const ownedFiles = await ctx.runQuery(
-    internal.aiFileTools.getOwnedReadyFiles,
-    {
-      ownerTokenIdentifier: input.ownerTokenIdentifier,
-      fileIds: entries.page.flatMap((entry) => {
-        const fileId = entry.metadata?.fileId
-        return typeof fileId === "string" ? [fileId as Id<"files">] : []
-      }),
+  let fileOffset = state.fileOffset
+  while (fileOffset < filesPage.page.length && !stopped) {
+    const file = filesPage.page[fileOffset]
+    if (!file.entryId) {
+      state.scannedReadyFiles += 1
+      state.unsearchableReadyFiles += 1
+      state.activeFile = undefined
+      fileOffset += 1
+      continue
     }
-  )
-  const paths = new Map(ownedFiles.map((file) => [file.fileId, file.path]))
-  const needle = input.caseSensitive
-    ? input.query
-    : input.query.toLocaleLowerCase()
-  const matches: ExactReferenceResult["matches"] = []
 
-  for (const entry of entries.page) {
-    const fileId = entry.metadata?.fileId as Id<"files"> | undefined
-    const path = fileId ? paths.get(fileId) : undefined
-    if (!fileId || !path) continue
-    let chunkCursor: string | null = null
-    let occurrenceCount = 0
-    const locations: FileSourceLocation[] = []
-    while (true) {
+    if (
+      state.activeFile &&
+      (state.activeFile.fileId !== file.fileId ||
+        state.activeFile.entryId !== file.entryId)
+    ) {
+      addWarning(state, "CORPUS_CHANGED")
+      state.activeFile = undefined
+    }
+    const active =
+      state.activeFile ??
+      ({
+        fileId: file.fileId,
+        entryId: file.entryId,
+        chunkCursor: null,
+        occurrenceCount: 0,
+        matchingLocationCount: 0,
+        locations: [],
+        suffix: "",
+        boundary: null,
+      } satisfies ExactActiveFile)
+    state.activeFile = active
+
+    while (
+      componentCalls < MAX_EXACT_COMPONENT_CALLS &&
+      chunksScanned < MAX_EXACT_CHUNKS &&
+      sourceBytes < MAX_EXACT_SOURCE_BYTES
+    ) {
       const chunks = await documentRag.listChunks(ctx, {
-        entryId: entry.entryId,
+        entryId: active.entryId as EntryId,
         order: "asc",
-        paginationOpts: { cursor: chunkCursor, numItems: 100 },
+        paginationOpts: {
+          cursor: active.chunkCursor,
+          numItems: Math.min(
+            EXACT_CHUNKS_PER_PAGE,
+            MAX_EXACT_CHUNKS - chunksScanned
+          ),
+          maximumBytesRead: MAX_EXACT_SOURCE_BYTES - sourceBytes,
+        },
       })
+      componentCalls += 1
       for (const chunk of chunks.page) {
+        const source = fileChunkSource(chunk.metadata)
         const haystack = input.caseSensitive
           ? chunk.text
-          : chunk.text.toLocaleLowerCase()
-        const chunkCount = countOccurrences(haystack, needle)
+          : chunk.text.toLowerCase()
+        const boundary = sourceBoundary(source.headingPath, source.location)
+        const acrossBoundary =
+          active.boundary === boundary
+            ? boundaryOccurrences(active.suffix, haystack, needle)
+            : 0
+        const chunkCount = countOccurrences(haystack, needle) + acrossBoundary
         if (chunkCount > 0) {
-          occurrenceCount += chunkCount
-          locations.push(fileChunkSource(chunk.metadata).location)
+          active.occurrenceCount += chunkCount
+          active.matchingLocationCount += 1
+          if (active.locations.length < MAX_EXACT_LOCATIONS_PER_FILE) {
+            active.locations.push(source.location)
+          }
         }
+        const sequence =
+          active.boundary === boundary ? active.suffix + haystack : haystack
+        active.suffix =
+          needle.length > 1 ? sequence.slice(-(needle.length - 1)) : ""
+        active.boundary = boundary
+        chunksScanned += 1
+        sourceBytes += utf8ByteLength(chunk.text)
       }
-      if (chunks.isDone) break
-      chunkCursor = chunks.continueCursor
+      if (!chunks.isDone) {
+        active.chunkCursor = chunks.continueCursor
+        continue
+      }
+
+      state.scannedReadyFiles += 1
+      state.scannedIndexedFiles += 1
+      if (active.occurrenceCount > 0) {
+        const omittedLocationCount =
+          active.matchingLocationCount - active.locations.length
+        if (omittedLocationCount > 0) {
+          addWarning(state, "LOCATIONS_TRUNCATED")
+        }
+        matches.push({
+          fileId: file.fileId,
+          path: file.path,
+          occurrenceCount: active.occurrenceCount,
+          locations: active.locations,
+          omittedLocationCount,
+        })
+        completedMatches += 1
+      }
+      state.activeFile = undefined
+      fileOffset += 1
+      break
     }
-    if (occurrenceCount > 0) {
-      matches.push({ fileId, path, occurrenceCount, locations })
+    stopped =
+      state.activeFile !== undefined || completedMatches >= MAX_EXACT_MATCHES
+  }
+
+  state.fileOffset = fileOffset
+  let complete = false
+  if (!stopped && fileOffset >= filesPage.page.length) {
+    if (filesPage.isDone) {
+      complete = true
+      state.activeFile = undefined
+    } else {
+      state.pageCursor = filesPage.continueCursor
+      state.fileOffset = 0
     }
   }
 
-  return {
+  const result: ExactReferenceResult = {
     matches,
-    scannedIndexedFiles: entries.page.length,
-    ...coverage,
-    complete: entries.isDone,
-    ...(entries.isDone ? {} : { nextCursor: entries.continueCursor }),
+    scannedReadyFiles: state.scannedReadyFiles,
+    scannedIndexedFiles: state.scannedIndexedFiles,
+    unsearchableReadyFiles: state.unsearchableReadyFiles,
+    complete,
+    ...(!complete ? { nextCursor: await encodeExactCursor(state, input) } : {}),
+    ...(state.warnings.length > 0 ? { warnings: state.warnings } : {}),
   }
+  if (utf8ByteLength(JSON.stringify(result)) > MAX_TOOL_RESULT_OUTPUT_BYTES) {
+    throw new ConvexError("EXACT_RESULT_TOO_LARGE")
+  }
+  return result
 }
 
 export const getOwnedReadyFiles = internalQuery({

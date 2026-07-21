@@ -1,5 +1,4 @@
 import { ResultAsync, errAsync, okAsync } from "neverthrow"
-import { z } from "zod"
 
 import type {
   FileApiError,
@@ -15,66 +14,19 @@ import type {
   SearchCandidate,
 } from "../../file-tool-executor"
 import type { FileIndexStatus } from "../../file-tools"
+import {
+  internalAiExactResponseSchema,
+  internalAiFileRequestSchema,
+  internalAiReadResponseSchema,
+  internalAiSearchResponseSchema,
+} from "../../internal-ai-http-contract"
+import type { z } from "zod"
 
 type Fetch = typeof fetch
 
 class GatewayRequestError {
   constructor(readonly error: FileToolGatewayError) {}
 }
-
-const locationSchema = z.union([
-  z.object({ kind: z.literal("page"), page: z.number() }),
-  z.object({ kind: z.literal("slide"), slide: z.number() }),
-  z.object({
-    kind: z.literal("sheet"),
-    sheet: z.string(),
-    row_start: z.number(),
-    row_end: z.number(),
-  }),
-  z.object({ kind: z.literal("text"), start: z.number(), end: z.number() }),
-])
-
-const searchResponseSchema = z.array(
-  z.object({
-    fileId: z.string(),
-    path: z.string(),
-    text: z.string(),
-    headingPath: z.array(z.string()),
-    location: locationSchema,
-  })
-)
-
-const exactReferenceResponseSchema = z.object({
-  matches: z.array(
-    z.object({
-      fileId: z.string(),
-      path: z.string(),
-      occurrenceCount: z.number().int().nonnegative(),
-      locations: z.array(locationSchema),
-    })
-  ),
-  scannedIndexedFiles: z.number().int().nonnegative(),
-  totalReadyFiles: z.number().int().nonnegative(),
-  unsearchableReadyFiles: z.number().int().nonnegative(),
-  complete: z.boolean(),
-  nextCursor: z.optional(z.string()),
-})
-
-const readResponseSchema = z.object({
-  file: z.object({
-    fileId: z.string(),
-    path: z.string(),
-    contentType: z.string(),
-  }),
-  chunks: z.array(
-    z.object({
-      text: z.string(),
-      headingPath: z.array(z.string()),
-      location: locationSchema,
-    })
-  ),
-  nextCursor: z.optional(z.string()),
-})
 
 function gatewayError(
   code: FileToolGatewayError["code"]
@@ -168,7 +120,7 @@ export class ConvexFileToolGateway implements FileToolGateway {
   searchCandidates(input: { query: string; limit: number }) {
     return this.request(
       { operation: "search", query: input.query, limit: input.limit },
-      searchResponseSchema
+      internalAiSearchResponseSchema
     ).map((candidates): readonly SearchCandidate[] => candidates)
   }
 
@@ -176,7 +128,6 @@ export class ConvexFileToolGateway implements FileToolGateway {
     query: string
     caseSensitive: boolean
     cursor: string | null
-    limit: number
   }) {
     return this.request(
       {
@@ -184,9 +135,8 @@ export class ConvexFileToolGateway implements FileToolGateway {
         query: input.query,
         caseSensitive: input.caseSensitive,
         cursor: input.cursor,
-        limit: input.limit,
       },
-      exactReferenceResponseSchema
+      internalAiExactResponseSchema
     ).map((page): ExactReferencePage => page)
   }
 
@@ -198,7 +148,7 @@ export class ConvexFileToolGateway implements FileToolGateway {
         cursor: input.cursor,
         numItems: input.limit,
       },
-      readResponseSchema
+      internalAiReadResponseSchema
     ).map((page): FileChunkPage => ({
       file: page.file,
       chunks: page.chunks,
@@ -219,7 +169,7 @@ export class ConvexFileToolGateway implements FileToolGateway {
           "Content-Type": "application/json",
           "x-file-service-secret": this.context.serviceSecret,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(internalAiFileRequestSchema.parse(body)),
       }).then(async (response) => {
         if (!response.ok) {
           const failure = (await response.json().catch(() => null)) as {

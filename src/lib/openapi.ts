@@ -452,7 +452,7 @@ export const openApiDocument = {
         operationId: "streamChat",
         summary: "Stream an assistant reply",
         description:
-          "Starts or continues a server-owned conversation and streams the assistant's reply as Server-Sent Events. Each `data:` line carries one JSON event: `conversation-id`, `text-delta`, `tool-call`, `error`, or `done`.",
+          "Starts or continues a server-owned conversation and streams the assistant's reply as Server-Sent Events. The first event accepts the turn with `conversation-id`; exactly one terminal `done` or `error` event follows any `text-delta` and `tool-call` events.",
         security: [{ clerkSession: [] }],
         requestBody: jsonBody({
           $ref: "#/components/schemas/ChatRequest",
@@ -569,7 +569,15 @@ export const openApiDocument = {
           "200": {
             description: "The file data operation completed.",
             content: {
-              "application/json": { schema: {} },
+              "application/json": {
+                schema: {
+                  oneOf: [
+                    { type: "array" },
+                    { $ref: "#/components/schemas/TrustedAiExactResponse" },
+                    { type: "object" },
+                  ],
+                },
+              },
             },
           },
           "400": errorResponse,
@@ -976,16 +984,11 @@ export const openApiDocument = {
             query: { type: "string", minLength: 1 },
             limit: { type: "integer", minimum: 1, maximum: 30 },
           }),
-          trustedOperation(
-            "findExact",
-            ["query", "caseSensitive", "cursor", "limit"],
-            {
-              query: { type: "string", minLength: 1 },
-              caseSensitive: { type: "boolean" },
-              cursor: { type: ["string", "null"] },
-              limit: { type: "integer", minimum: 1, maximum: 50 },
-            }
-          ),
+          trustedOperation("findExact", ["query", "caseSensitive", "cursor"], {
+            query: { type: "string", minLength: 1 },
+            caseSensitive: { type: "boolean" },
+            cursor: { type: ["string", "null"] },
+          }),
           trustedOperation("read", ["fileId", "cursor", "numItems"], {
             fileId: { type: "string" },
             cursor: { type: ["string", "null"] },
@@ -993,6 +996,118 @@ export const openApiDocument = {
           }),
         ],
         discriminator: { propertyName: "operation" },
+      },
+      TrustedAiSourceLocation: {
+        oneOf: [
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "page"],
+            properties: {
+              kind: { type: "string", const: "page" },
+              page: { type: "integer", minimum: 0 },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "slide"],
+            properties: {
+              kind: { type: "string", const: "slide" },
+              slide: { type: "integer", minimum: 0 },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "sheet", "row_start", "row_end"],
+            properties: {
+              kind: { type: "string", const: "sheet" },
+              sheet: { type: "string" },
+              row_start: { type: "integer", minimum: 0 },
+              row_end: { type: "integer", minimum: 0 },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "start", "end"],
+            properties: {
+              kind: { type: "string", const: "text" },
+              start: { type: "integer", minimum: 0 },
+              end: { type: "integer", minimum: 0 },
+            },
+          },
+        ],
+        discriminator: { propertyName: "kind" },
+      },
+      TrustedAiExactResponse: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "matches",
+          "scannedReadyFiles",
+          "scannedIndexedFiles",
+          "unsearchableReadyFiles",
+          "complete",
+        ],
+        properties: {
+          matches: {
+            type: "array",
+            maxItems: 10,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: [
+                "fileId",
+                "path",
+                "occurrenceCount",
+                "locations",
+                "omittedLocationCount",
+              ],
+              properties: {
+                fileId: { type: "string" },
+                path: { type: "string" },
+                occurrenceCount: { type: "integer", minimum: 1 },
+                locations: {
+                  type: "array",
+                  maxItems: 20,
+                  description: "Representative matching source locations.",
+                  items: {
+                    $ref: "#/components/schemas/TrustedAiSourceLocation",
+                  },
+                },
+                omittedLocationCount: {
+                  type: "integer",
+                  minimum: 0,
+                  description:
+                    "Additional matching locations omitted from this bounded sample.",
+                },
+              },
+            },
+          },
+          scannedReadyFiles: { type: "integer", minimum: 0 },
+          scannedIndexedFiles: { type: "integer", minimum: 0 },
+          unsearchableReadyFiles: { type: "integer", minimum: 0 },
+          complete: {
+            type: "boolean",
+            description:
+              "True when the ready-file corpus was traversed. Exhaustiveness additionally requires no warnings and zero unsearchable files.",
+          },
+          nextCursor: {
+            type: "string",
+            description:
+              "Opaque signed continuation state bound to the owner and exact query.",
+          },
+          warnings: {
+            type: "array",
+            uniqueItems: true,
+            items: {
+              type: "string",
+              enum: ["LOCATIONS_TRUNCATED", "CORPUS_CHANGED"],
+            },
+          },
+        },
       },
       TrustedAiUsageOperation: {
         oneOf: [

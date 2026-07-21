@@ -46,20 +46,18 @@ describe("file tool input validation", () => {
     expect(searchFilesInputSchema.safeParse({ query: " " }).success).toBe(false)
   })
 
-  it("requires a non-blank exact query and bounds its result page", () => {
+  it("preserves literal exact queries and rejects model-controlled limits", () => {
     expect(
       findExactReferencesInputSchema.safeParse({
         query: "momentum",
         case_sensitive: true,
-        limit: 50,
       }).success
     ).toBe(true)
     expect(
-      findExactReferencesInputSchema.safeParse({ query: " ", limit: 50 })
-        .success
-    ).toBe(false)
+      findExactReferencesInputSchema.safeParse({ query: " " }).success
+    ).toBe(true)
     expect(
-      findExactReferencesInputSchema.safeParse({ query: "momentum", limit: 51 })
+      findExactReferencesInputSchema.safeParse({ query: "momentum", limit: 1 })
         .success
     ).toBe(false)
   })

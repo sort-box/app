@@ -2,6 +2,7 @@ import { ResultAsync, errAsync } from "neverthrow"
 
 import type { AiUsage } from "../../ai-provider"
 import type { AiUsageError, AiUsageLedger } from "../../ai-usage"
+import { internalAiUsageRequestSchema } from "../../internal-ai-http-contract"
 
 type Fetch = typeof fetch
 
@@ -63,7 +64,9 @@ export class ConvexAiUsageLedger implements AiUsageLedger {
           "Content-Type": "application/json",
           "x-file-service-secret": this.serviceSecret,
         },
-        body: JSON.stringify({ operation, ...usage }),
+        body: JSON.stringify(
+          internalAiUsageRequestSchema.parse({ operation, ...usage })
+        ),
       })
         .then(async (response) => {
           if (response.ok) return

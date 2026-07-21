@@ -40,6 +40,9 @@ async function readEvents(
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let buffer = ""
+  let eventCount = 0
+  let terminal = false
+  let invalid = false
 
   const emit = (block: string) => {
     const data = block
@@ -49,7 +52,20 @@ async function readEvents(
       .join("\n")
     if (data.length === 0) return
     const event = parseEvent(data)
-    if (event) onEvent(event)
+    if (!event || terminal) {
+      invalid = true
+      return
+    }
+    if (
+      (eventCount === 0 && event.type !== "conversation-id") ||
+      (eventCount > 0 && event.type === "conversation-id")
+    ) {
+      invalid = true
+      return
+    }
+    eventCount += 1
+    if (event.type === "done" || event.type === "error") terminal = true
+    onEvent(event)
   }
 
   try {
@@ -68,6 +84,9 @@ async function readEvents(
       if (done) break
     }
     emit(buffer)
+    if (invalid || !terminal) {
+      throw new ChatApiError("UNAVAILABLE", FALLBACK_MESSAGE)
+    }
   } finally {
     reader.releaseLock()
   }

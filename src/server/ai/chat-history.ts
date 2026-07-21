@@ -1,7 +1,7 @@
 import type { ResultAsync } from "neverthrow"
 
 import type { AiMessage, AiProviderError } from "./ai-provider"
-import type { AiMessageRecorder } from "./file-tool-conversation"
+import type { AiMessageRecorder } from "./message-recorder"
 
 export type ChatHistoryError = {
   code: "NOT_FOUND" | "UNAVAILABLE"

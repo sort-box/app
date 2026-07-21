@@ -50,13 +50,15 @@ function gateway(overrides: Partial<FileToolGateway> = {}): FileToolGateway {
             path: "/reports/revenue.pdf",
             occurrenceCount: 2,
             locations: [{ kind: "page" as const, page: 3 }],
+            omittedLocationCount: 4,
           },
         ],
+        scannedReadyFiles: 3,
         scannedIndexedFiles: 2,
-        totalReadyFiles: 3,
         unsearchableReadyFiles: 1,
         complete: false,
         nextCursor: "exact-cursor",
+        warnings: ["LOCATIONS_TRUNCATED" as const],
       })
     ),
     readChunks: vi.fn(() =>
@@ -189,7 +191,6 @@ describe("FileToolExecutorService", () => {
       query: "Revenue",
       caseSensitive: false,
       cursor: null,
-      limit: 25,
     })
     expect(result._unsafeUnwrap()).toEqual({
       matches: [
@@ -198,13 +199,15 @@ describe("FileToolExecutorService", () => {
           path: "/reports/revenue.pdf",
           occurrence_count: 2,
           locations: [{ kind: "page", page: 3 }],
+          omitted_location_count: 4,
         },
       ],
+      scanned_ready_files: 3,
       scanned_indexed_files: 2,
-      total_ready_files: 3,
       unsearchable_ready_files: 1,
       complete: false,
       next_cursor: "exact-cursor",
+      warnings: ["LOCATIONS_TRUNCATED"],
     })
   })
 

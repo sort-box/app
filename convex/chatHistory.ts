@@ -1,5 +1,10 @@
 import { ConvexError, v } from "convex/values"
 
+import {
+  MAX_STORED_MESSAGE_BYTES,
+  storedMessageSchema,
+  utf8ByteLength,
+} from "../src/server/ai/chat-history-contract"
 import { storedAiMessage } from "./chatSchemas"
 import { internalMutation, query } from "./_generated/server"
 
@@ -23,6 +28,12 @@ export const startTurn = internalMutation({
     messages: v.array(storedAiMessage),
   }),
   handler: async (ctx, args) => {
+    if (
+      args.content.length === 0 ||
+      utf8ByteLength(args.content) > MAX_STORED_MESSAGE_BYTES
+    ) {
+      throw new ConvexError("INVALID_CHAT_MESSAGES")
+    }
     const normalizedId = args.conversationId
       ? ctx.db.normalizeId("chatConversations", args.conversationId)
       : null
@@ -80,7 +91,10 @@ export const appendMessages = internalMutation({
   handler: async (ctx, args) => {
     if (
       args.messages.length === 0 ||
-      args.messages.length > MAX_APPEND_MESSAGES
+      args.messages.length > MAX_APPEND_MESSAGES ||
+      args.messages.some(
+        (message) => !storedMessageSchema.safeParse(message).success
+      )
     ) {
       throw new ConvexError("INVALID_CHAT_MESSAGES")
     }

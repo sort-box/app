@@ -18,7 +18,7 @@ import {
 } from "vitest"
 
 import { ChatPane } from "./chat-pane"
-import { streamChat } from "./api"
+import { ChatApiError, streamChat } from "./api"
 import type * as ApiModule from "./api"
 
 vi.mock("./api", async (importOriginal) => ({
@@ -104,6 +104,7 @@ describe("ChatPane", () => {
 
   it("surfaces stream errors without losing the conversation", async () => {
     streamChatMock.mockImplementation(async ({ onEvent }) => {
+      onEvent({ type: "conversation-id", conversationId: "chat-1" })
       onEvent({
         type: "error",
         error: {
@@ -122,6 +123,77 @@ describe("ChatPane", () => {
       ).toBeDefined()
     })
     expect(screen.getByText("Hello")).toBeDefined()
+  })
+
+  it("rolls back an optimistic turn rejected before acceptance", async () => {
+    streamChatMock.mockRejectedValue(
+      new ChatApiError("USAGE_LIMIT_EXCEEDED", "Limit reached.")
+    )
+    render(<ChatPane />)
+
+    send("Not accepted")
+
+    await waitFor(() =>
+      expect(screen.getByText("Limit reached.")).toBeDefined()
+    )
+    expect(screen.queryByText("Not accepted")).toBeNull()
+  })
+
+  it("keeps canonical partial text after an accepted stream fails", async () => {
+    streamChatMock
+      .mockImplementationOnce(async ({ onEvent }) => {
+        onEvent({ type: "conversation-id", conversationId: "chat-1" })
+        onEvent({ type: "text-delta", text: "Canonical partial" })
+        throw new ChatApiError("UNAVAILABLE", "Stream interrupted.")
+      })
+      .mockImplementationOnce(async ({ onEvent }) => {
+        onEvent({ type: "conversation-id", conversationId: "chat-1" })
+        onEvent({ type: "done" })
+      })
+    render(<ChatPane />)
+
+    send("Accepted question")
+
+    await waitFor(() =>
+      expect(screen.getByText("Stream interrupted.")).toBeDefined()
+    )
+    expect(screen.getByText("Accepted question")).toBeDefined()
+    expect(screen.getByText("Canonical partial")).toBeDefined()
+
+    send("Retry")
+    await waitFor(() => expect(streamChatMock).toHaveBeenCalledTimes(2))
+    expect(streamChatMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ conversationId: "chat-1", message: "Retry" })
+    )
+  })
+
+  it("keeps accepted partial text and stays silent when the user stops", async () => {
+    streamChatMock.mockImplementation(
+      ({ onEvent, signal }) =>
+        new Promise<void>((_resolve, reject) => {
+          onEvent({ type: "conversation-id", conversationId: "chat-1" })
+          onEvent({ type: "text-delta", text: "Stopped partial" })
+          signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"))
+          })
+        })
+    )
+    render(<ChatPane />)
+
+    send("Stop this")
+    await waitFor(() =>
+      expect(screen.getByText("Stopped partial")).toBeDefined()
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Stop response" }))
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send message" })).toBeDefined()
+    )
+
+    expect(screen.getByText("Stop this")).toBeDefined()
+    expect(screen.getByText("Stopped partial")).toBeDefined()
+    expect(
+      screen.queryByText("The assistant is temporarily unavailable.")
+    ).toBeNull()
   })
 
   it("renders loaded history and continues the opened conversation", async () => {

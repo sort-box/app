@@ -6,11 +6,7 @@ import {
   type ChatStreamEvent,
 } from "@/features/chat/chat-transport"
 import type { AiProviderError, AiStream } from "@/server/ai/ai-provider"
-import { ChatHistoryMessageRecorder } from "@/server/ai/chat-history"
-import {
-  createChatAiService,
-  createChatHistory,
-} from "@/server/ai/openrouter-ai-service.server"
+import { createChatTurnService } from "@/server/ai/openrouter-ai-service.server"
 import { fileApiMiddleware } from "@/server/files/file-api.server"
 
 const MAX_BODY_BYTES = 256 * 1024
@@ -23,11 +19,13 @@ const SYSTEM_PROMPT = [
   "Use find_exact_references, not semantic search, when the user asks for an",
   "exact term, every occurrence, all matching files, or whether a particular",
   "file contains a term. Follow next_cursor until complete when exhaustiveness",
-  "is requested. Deduplicate file lists by path.",
+  "is requested. Deduplicate file lists by path and combine paginated results.",
   "Never claim that you searched, read, or found a file unless a tool result in",
   "this conversation proves it. Never claim exhaustive coverage unless the",
-  "tool reports complete=true and unsearchable_ready_files=0. Clearly report",
-  "partial results, pagination, indexing gaps, unavailable files, and warnings.",
+  "tool reports complete=true, unsearchable_ready_files=0, and no warnings.",
+  "Source locations are representative when omitted_location_count is nonzero.",
+  "Clearly report partial results, indexing gaps, unavailable files, warnings,",
+  "and omitted source locations.",
   "For questions about the conversation itself, inspect the supplied messages",
   "literally. Distinguish the immediately previous message from text quoted",
   "inside it, and do not accept a correction that contradicts the transcript.",
@@ -58,7 +56,7 @@ function invalidInput(): AiProviderError {
   return { code: "INVALID_INPUT", message: "The chat request is invalid." }
 }
 
-async function chatBody(
+export async function chatBody(
   request: Request
 ): Promise<ChatRequest | AiProviderError> {
   const contentType = request.headers.get("content-type")?.split(";")[0]
@@ -77,15 +75,30 @@ async function chatBody(
   }
 }
 
-function sseResponse(stream: AiStream, conversationId: string): Response {
+export function sseResponse(
+  stream: AiStream,
+  conversationId: string,
+  requestId: string
+): Response {
   const encoder = new TextEncoder()
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const send = (event: ChatStreamEvent) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`))
+      let connected = true
+      const send = (event: ChatStreamEvent): boolean => {
+        if (!connected) return false
+        try {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
+          )
+          return true
+        } catch {
+          connected = false
+          return false
+        }
       }
+      if (!send({ type: "conversation-id", conversationId })) return
       try {
-        send({ type: "conversation-id", conversationId })
+        let terminal = false
         for await (const result of stream) {
           if (result.isErr()) {
             send({
@@ -95,19 +108,38 @@ function sseResponse(stream: AiStream, conversationId: string): Response {
                 message: result.error.message,
               },
             })
+            terminal = true
             return
           }
           const event = result.value
           if (event.type === "text-delta") {
-            send({ type: "text-delta", text: event.text })
+            if (!send({ type: "text-delta", text: event.text })) return
           } else if (event.type === "tool-call") {
-            send({ type: "tool-call", name: event.call.name })
+            if (!send({ type: "tool-call", name: event.call.name })) return
           } else {
-            send({ type: "done" })
+            if (!send({ type: "done" })) return
+            terminal = true
+            return
           }
         }
-      } catch {
-        // The client disconnected; there is no reader left to notify.
+        if (!terminal) {
+          send({
+            type: "error",
+            error: {
+              code: "INVALID_RESPONSE",
+              message: "The AI provider stream ended unexpectedly.",
+            },
+          })
+        }
+      } catch (cause) {
+        console.error("Chat stream failed unexpectedly.", { requestId, cause })
+        send({
+          type: "error",
+          error: {
+            code: "UNAVAILABLE",
+            message: "The assistant is temporarily unavailable.",
+          },
+        })
       } finally {
         try {
           controller.close()
@@ -134,39 +166,23 @@ export const Route = createFileRoute("/api/chat")({
         if ("code" in body) {
           return chatErrorResponse(context.fileApi.requestId, body)
         }
-        const history = createChatHistory(context.fileApi)
-        const started = await history.startTurn({
+        const service = createChatTurnService(context.fileApi)
+        if (service.isErr()) {
+          return chatErrorResponse(context.fileApi.requestId, service.error)
+        }
+        const started = await service.value.startTurn({
           conversationId: body.conversation_id ?? null,
           content: body.message,
-        })
-        if (started.isErr()) {
-          return chatErrorResponse(
-            context.fileApi.requestId,
-            started.error.code === "NOT_FOUND"
-              ? {
-                  code: "INVALID_INPUT",
-                  message: "The conversation was not found.",
-                }
-              : {
-                  code: "UNAVAILABLE",
-                  message:
-                    "The conversation history is temporarily unavailable.",
-                  retryable: true,
-                }
-          )
-        }
-        const service = createChatAiService(
-          context.fileApi,
-          new ChatHistoryMessageRecorder(history, started.value.conversationId)
-        )
-        const stream = await service.streamConversation({
-          messages: started.value.messages,
           systemPrompt: SYSTEM_PROMPT,
           abortSignal: request.signal,
         })
-        return stream.match(
-          (aiStream) => sseResponse(aiStream, started.value.conversationId),
-          (error) => chatErrorResponse(context.fileApi.requestId, error)
+        if (started.isErr()) {
+          return chatErrorResponse(context.fileApi.requestId, started.error)
+        }
+        return sseResponse(
+          started.value.stream,
+          started.value.conversationId,
+          context.fileApi.requestId
         )
       },
     },

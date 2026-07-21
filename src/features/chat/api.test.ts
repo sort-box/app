@@ -27,8 +27,8 @@ describe("streamChat", () => {
       "fetch",
       vi.fn(async () =>
         sseResponse([
-          'data: {"type":"text-delta","text":"Hel',
-          'lo"}\n\ndata: {"type":"conversation-id","conversationId":"chat-1"}\n\ndata: {"type":"tool-call","name":"search_files"}\n\n',
+          'data: {"type":"conversation-id","conversationId":"chat-1"}\n\ndata: {"type":"text-delta","text":"Hel',
+          'lo"}\n\ndata: {"type":"tool-call","name":"search_files"}\n\n',
           'data: {"type":"done"}\n\n',
         ])
       )
@@ -42,11 +42,71 @@ describe("streamChat", () => {
     })
 
     expect(events).toEqual([
-      { type: "text-delta", text: "Hello" },
       { type: "conversation-id", conversationId: "chat-1" },
+      { type: "text-delta", text: "Hello" },
       { type: "tool-call", name: "search_files" },
       { type: "done" },
     ])
+  })
+
+  it("rejects a stream that ends without a terminal event", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        sseResponse([
+          'data: {"type":"conversation-id","conversationId":"chat-1"}\n\n',
+          'data: {"type":"text-delta","text":"partial"}\n\n',
+        ])
+      )
+    )
+
+    await expect(
+      streamChat({
+        conversationId: null,
+        message: "Hi",
+        onEvent: () => {},
+      })
+    ).rejects.toMatchObject({ code: "UNAVAILABLE" })
+  })
+
+  it("rejects duplicate terminal events", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        sseResponse([
+          'data: {"type":"conversation-id","conversationId":"chat-1"}\n\n',
+          'data: {"type":"done"}\n\ndata: {"type":"done"}\n\n',
+        ])
+      )
+    )
+
+    await expect(
+      streamChat({
+        conversationId: null,
+        message: "Hi",
+        onEvent: () => {},
+      })
+    ).rejects.toMatchObject({ code: "UNAVAILABLE" })
+  })
+
+  it("rejects a stream whose first event does not accept the turn", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        sseResponse([
+          'data: {"type":"text-delta","text":"orphan"}\n\n',
+          'data: {"type":"done"}\n\n',
+        ])
+      )
+    )
+
+    await expect(
+      streamChat({
+        conversationId: null,
+        message: "Hi",
+        onEvent: () => {},
+      })
+    ).rejects.toMatchObject({ code: "UNAVAILABLE" })
   })
 
   it("throws a typed error when the request is rejected", async () => {

@@ -5,7 +5,6 @@ import type { AiToolDefinition, JsonValue } from "./ai-provider"
 
 const MAX_LIST_RESULTS = 100
 const MAX_SEARCH_RESULTS = 10
-const MAX_EXACT_SEARCH_RESULTS = 50
 const MAX_READ_CHUNKS = 20
 
 export const listFilesInputSchema = z
@@ -25,10 +24,9 @@ export const searchFilesInputSchema = z
 
 export const findExactReferencesInputSchema = z
   .object({
-    query: z.string().trim().min(1).max(1_000),
+    query: z.string().min(1).max(1_000),
     case_sensitive: z.boolean().optional(),
     cursor: z.string().min(1).nullable().optional(),
-    limit: z.number().int().min(1).max(MAX_EXACT_SEARCH_RESULTS).optional(),
   })
   .strict()
 
@@ -90,12 +88,14 @@ export type FindExactReferencesOutput = {
     path: string
     occurrence_count: number
     locations: readonly FileSourceLocation[]
+    omitted_location_count: number
   }[]
+  scanned_ready_files: number
   scanned_indexed_files: number
-  total_ready_files: number
   unsearchable_ready_files: number
   complete: boolean
   next_cursor?: string
+  warnings?: readonly ("LOCATIONS_TRUNCATED" | "CORPUS_CHANGED")[]
 }
 
 export type ReadFileOutput = {
@@ -163,7 +163,7 @@ export const searchFilesTool = {
 export const findExactReferencesTool = {
   name: "find_exact_references",
   description:
-    "Find literal occurrences across the user's indexed files. Use this instead of semantic search for requests such as 'find all files containing X' or 'is X in my CV'. Returns one deduplicated match per file, occurrence counts, source locations, pagination, and corpus coverage. Continue with next_cursor until complete. Never describe the result as covering all stored files when unsearchable_ready_files is greater than zero.",
+    "Find literal occurrences across the user's indexed files. Use this instead of semantic search for requests such as 'find all files containing X' or 'is X in my CV'. Returns exact per-file occurrence counts, representative source locations, omitted-location counts, resumable pagination, and cumulative corpus coverage. Continue with next_cursor until complete. Never claim exhaustive coverage when unsearchable_ready_files is greater than zero or warnings are present.",
   inputSchema: inputSchema(findExactReferencesInputSchema),
 } satisfies AiToolDefinition
 

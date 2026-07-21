@@ -1,5 +1,16 @@
 import { httpRouter } from "convex/server"
 
+import {
+  chatHistoryRequestSchema,
+  chatHistoryStartResponseSchema,
+} from "../src/server/ai/chat-history-contract"
+import {
+  internalAiExactResponseSchema,
+  internalAiFileRequestSchema,
+  internalAiReadResponseSchema,
+  internalAiSearchResponseSchema,
+  internalAiUsageRequestSchema,
+} from "../src/server/ai/internal-ai-http-contract"
 import { internal } from "./_generated/api"
 import { httpAction } from "./_generated/server"
 import {
@@ -93,16 +104,13 @@ http.route({
     }
     const identity = await ctx.auth.getUserIdentity()
     if (!identity) return new Response("Unauthorized", { status: 401 })
-    const input = (await request.json().catch(() => null)) as Record<
-      string,
-      unknown
-    > | null
-    if (
-      !input ||
-      (input.operation !== "check" && input.operation !== "record")
-    ) {
+    const parsed = internalAiUsageRequestSchema.safeParse(
+      await request.json().catch(() => null)
+    )
+    if (!parsed.success) {
       return new Response("Invalid request", { status: 400 })
     }
+    const input = parsed.data
     const ownerTokenIdentifier = identity.tokenIdentifier
     try {
       if (input.operation === "check") {
@@ -110,12 +118,6 @@ http.route({
           ownerTokenIdentifier,
         })
         return Response.json(null)
-      }
-      if (
-        typeof input.inputTokens !== "number" ||
-        typeof input.outputTokens !== "number"
-      ) {
-        return new Response("Invalid request", { status: 400 })
       }
       await ctx.runMutation(internal.aiUsage.record, {
         ownerTokenIdentifier,
@@ -140,70 +142,10 @@ function aiFileToolError(error: unknown): Response {
   if (message.includes("ArgumentValidationError")) {
     return Response.json({ code: "INVALID_INPUT" }, { status: 400 })
   }
+  if (message.includes("INVALID_EXACT_CURSOR")) {
+    return Response.json({ code: "INVALID_INPUT" }, { status: 400 })
+  }
   return Response.json({ code: "UNAVAILABLE" }, { status: 503 })
-}
-
-type ChatHistoryMessage =
-  | { role: "user"; content: string }
-  | {
-      role: "assistant"
-      content: string
-      toolCalls?: Array<{ id: string; name: string; argumentsJson: string }>
-    }
-  | { role: "tool"; toolCallId: string; content: string }
-
-function chatHistoryMessage(value: unknown): ChatHistoryMessage | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null
-  const input = value as Record<string, unknown>
-  if (
-    input.role === "user" &&
-    typeof input.content === "string" &&
-    input.content.length <= 16_000
-  ) {
-    return { role: "user", content: input.content }
-  }
-  if (
-    input.role === "tool" &&
-    typeof input.toolCallId === "string" &&
-    typeof input.content === "string" &&
-    input.content.length <= 64_000
-  ) {
-    return {
-      role: "tool",
-      toolCallId: input.toolCallId,
-      content: input.content,
-    }
-  }
-  if (
-    input.role !== "assistant" ||
-    typeof input.content !== "string" ||
-    input.content.length > 16_000
-  ) {
-    return null
-  }
-  if (input.toolCalls === undefined) {
-    return { role: "assistant", content: input.content }
-  }
-  if (!Array.isArray(input.toolCalls) || input.toolCalls.length > 8) return null
-  const toolCalls = input.toolCalls.flatMap((value) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return []
-    const call = value as Record<string, unknown>
-    return typeof call.id === "string" &&
-      typeof call.name === "string" &&
-      typeof call.argumentsJson === "string" &&
-      call.argumentsJson.length <= 16_000
-      ? [
-          {
-            id: call.id,
-            name: call.name,
-            argumentsJson: call.argumentsJson,
-          },
-        ]
-      : []
-  })
-  return toolCalls.length === input.toolCalls.length
-    ? { role: "assistant", content: input.content, toolCalls }
-    : null
 }
 
 function chatHistoryError(error: unknown): Response {
@@ -229,50 +171,31 @@ http.route({
     }
     const identity = await ctx.auth.getUserIdentity()
     if (!identity) return new Response("Unauthorized", { status: 401 })
-    const input = (await request.json().catch(() => null)) as Record<
-      string,
-      unknown
-    > | null
-    if (!input || typeof input.operation !== "string") {
+    const parsed = chatHistoryRequestSchema.safeParse(
+      await request.json().catch(() => null)
+    )
+    if (!parsed.success) {
       return new Response("Invalid request", { status: 400 })
     }
+    const input = parsed.data
 
     try {
       if (input.operation === "start") {
-        if (
-          (input.conversationId !== null &&
-            typeof input.conversationId !== "string") ||
-          typeof input.content !== "string" ||
-          input.content.length === 0 ||
-          input.content.length > 16_000
-        ) {
-          return new Response("Invalid request", { status: 400 })
-        }
         return Response.json(
-          await ctx.runMutation(internal.chatHistory.startTurn, {
-            ownerTokenIdentifier: identity.tokenIdentifier,
-            conversationId: input.conversationId,
-            content: input.content,
-          })
+          chatHistoryStartResponseSchema.parse(
+            await ctx.runMutation(internal.chatHistory.startTurn, {
+              ownerTokenIdentifier: identity.tokenIdentifier,
+              conversationId: input.conversationId,
+              content: input.content,
+            })
+          )
         )
       }
       if (input.operation === "append") {
-        if (
-          typeof input.conversationId !== "string" ||
-          !Array.isArray(input.messages) ||
-          input.messages.length === 0 ||
-          input.messages.length > 10
-        ) {
-          return new Response("Invalid request", { status: 400 })
-        }
-        const messages = input.messages.map(chatHistoryMessage)
-        if (messages.some((message) => message === null)) {
-          return new Response("Invalid request", { status: 400 })
-        }
         await ctx.runMutation(internal.chatHistory.appendMessages, {
           ownerTokenIdentifier: identity.tokenIdentifier,
           conversationId: input.conversationId,
-          messages: messages as ChatHistoryMessage[],
+          messages: input.messages,
         })
         return Response.json(null)
       }
@@ -293,75 +216,48 @@ http.route({
     const identity = await ctx.auth.getUserIdentity()
     if (!identity) return new Response("Unauthorized", { status: 401 })
 
-    const input = (await request.json().catch(() => null)) as Record<
-      string,
-      unknown
-    > | null
-    if (!input || typeof input.operation !== "string") {
+    const parsed = internalAiFileRequestSchema.safeParse(
+      await request.json().catch(() => null)
+    )
+    if (!parsed.success) {
       return new Response("Invalid request", { status: 400 })
     }
+    const input = parsed.data
 
     try {
       if (input.operation === "search") {
-        if (
-          typeof input.query !== "string" ||
-          input.query.length === 0 ||
-          typeof input.limit !== "number" ||
-          !Number.isInteger(input.limit) ||
-          input.limit < 1 ||
-          input.limit > 30
-        ) {
-          return new Response("Invalid request", { status: 400 })
-        }
         return Response.json(
-          await searchOwnedFiles(ctx, {
-            ownerTokenIdentifier: identity.tokenIdentifier,
-            query: input.query,
-            limit: input.limit,
-          })
+          internalAiSearchResponseSchema.parse(
+            await searchOwnedFiles(ctx, {
+              ownerTokenIdentifier: identity.tokenIdentifier,
+              query: input.query,
+              limit: input.limit,
+            })
+          )
         )
       }
       if (input.operation === "findExact") {
-        if (
-          typeof input.query !== "string" ||
-          input.query.length === 0 ||
-          typeof input.caseSensitive !== "boolean" ||
-          (input.cursor !== null && typeof input.cursor !== "string") ||
-          typeof input.limit !== "number" ||
-          !Number.isInteger(input.limit) ||
-          input.limit < 1 ||
-          input.limit > 50
-        ) {
-          return new Response("Invalid request", { status: 400 })
-        }
         return Response.json(
-          await findExactReferencesInOwnedFiles(ctx, {
-            ownerTokenIdentifier: identity.tokenIdentifier,
-            query: input.query,
-            caseSensitive: input.caseSensitive,
-            cursor: input.cursor,
-            limit: input.limit,
-          })
+          internalAiExactResponseSchema.parse(
+            await findExactReferencesInOwnedFiles(ctx, {
+              ownerTokenIdentifier: identity.tokenIdentifier,
+              query: input.query,
+              caseSensitive: input.caseSensitive,
+              cursor: input.cursor,
+            })
+          )
         )
       }
       if (input.operation === "read") {
-        if (
-          typeof input.fileId !== "string" ||
-          (input.cursor !== null && typeof input.cursor !== "string") ||
-          typeof input.numItems !== "number" ||
-          !Number.isInteger(input.numItems) ||
-          input.numItems < 1 ||
-          input.numItems > 20
-        ) {
-          return new Response("Invalid request", { status: 400 })
-        }
         return Response.json(
-          await ctx.runQuery(internal.aiFileTools.readOwnedFileChunks, {
-            ownerTokenIdentifier: identity.tokenIdentifier,
-            fileId: input.fileId as never,
-            cursor: input.cursor,
-            numItems: input.numItems,
-          })
+          internalAiReadResponseSchema.parse(
+            await ctx.runQuery(internal.aiFileTools.readOwnedFileChunks, {
+              ownerTokenIdentifier: identity.tokenIdentifier,
+              fileId: input.fileId,
+              cursor: input.cursor,
+              numItems: input.numItems,
+            })
+          )
         )
       }
       return new Response("Invalid request", { status: 400 })

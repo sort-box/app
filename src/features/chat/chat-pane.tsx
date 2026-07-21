@@ -53,10 +53,11 @@ export function ChatPane({
 
   const sendMessage = async (content: string) => {
     if (isStreaming) return
+    const userId = crypto.randomUUID()
     const assistantId = crypto.randomUUID()
     setMessages((current) => [
       ...current,
-      { id: crypto.randomUUID(), role: "user", content },
+      { id: userId, role: "user", content },
       { id: assistantId, role: "assistant", content: "" },
     ])
     setError(null)
@@ -64,6 +65,7 @@ export function ChatPane({
     setIsStreaming(true)
     const controller = new AbortController()
     abortRef.current = controller
+    let accepted = false
 
     try {
       await streamChat({
@@ -72,6 +74,7 @@ export function ChatPane({
         signal: controller.signal,
         onEvent: (event) => {
           if (event.type === "conversation-id") {
+            accepted = true
             setConversationId(event.conversationId)
             onConversationCreated?.(event.conversationId)
           } else if (event.type === "text-delta") {
@@ -91,6 +94,13 @@ export function ChatPane({
         },
       })
     } catch (caught) {
+      if (!accepted) {
+        setMessages((current) =>
+          current.filter(
+            (message) => message.id !== userId && message.id !== assistantId
+          )
+        )
+      }
       if (!controller.signal.aborted) {
         setError(
           caught instanceof ChatApiError ? caught.message : FALLBACK_ERROR
@@ -129,11 +139,13 @@ export function ChatPane({
                 {activity}
               </p>
             )}
-            {error !== null && (
-              <p className="text-sm text-destructive">{error}</p>
-            )}
             <div ref={endRef} />
           </div>
+        )}
+        {error !== null && (
+          <p className="mx-auto w-full max-w-3xl px-4 pb-4 text-sm text-destructive">
+            {error}
+          </p>
         )}
       </div>
       <div className="mx-auto w-full max-w-3xl px-4 pb-4">

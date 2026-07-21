@@ -66,12 +66,14 @@ export type ExactReferencePage = {
     path: string
     occurrenceCount: number
     locations: readonly FileSourceLocation[]
+    omittedLocationCount: number
   }[]
+  scannedReadyFiles: number
   scannedIndexedFiles: number
-  totalReadyFiles: number
   unsearchableReadyFiles: number
   complete: boolean
   nextCursor?: string
+  warnings?: readonly ("LOCATIONS_TRUNCATED" | "CORPUS_CHANGED")[]
 }
 
 /**
@@ -95,7 +97,6 @@ export interface FileToolGateway {
     query: string
     caseSensitive: boolean
     cursor: string | null
-    limit: number
   }) => ResultAsync<ExactReferencePage, FileToolGatewayError>
   readChunks: (input: {
     fileId: string
@@ -236,7 +237,6 @@ export class FileToolExecutorService implements FileToolExecutor {
         query: input.query,
         caseSensitive: input.case_sensitive ?? false,
         cursor: input.cursor ?? null,
-        limit: input.limit ?? 25,
       })
       .map((page) => ({
         matches: page.matches.map((match) => ({
@@ -244,14 +244,16 @@ export class FileToolExecutorService implements FileToolExecutor {
           path: match.path,
           occurrence_count: match.occurrenceCount,
           locations: match.locations,
+          omitted_location_count: match.omittedLocationCount,
         })),
+        scanned_ready_files: page.scannedReadyFiles,
         scanned_indexed_files: page.scannedIndexedFiles,
-        total_ready_files: page.totalReadyFiles,
         unsearchable_ready_files: page.unsearchableReadyFiles,
         complete: page.complete,
         ...(page.nextCursor !== undefined
           ? { next_cursor: page.nextCursor }
           : {}),
+        ...(page.warnings !== undefined ? { warnings: page.warnings } : {}),
       }))
       .mapErr(toolError)
   }

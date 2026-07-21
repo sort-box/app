@@ -2,6 +2,11 @@ import { errAsync, okAsync, ResultAsync } from "neverthrow"
 import { z } from "zod"
 
 import type { AiMessage, JsonValue } from "../../ai-provider"
+import {
+  chatHistoryRequestSchema,
+  chatHistoryStartResponseSchema,
+} from "../../chat-history-contract"
+import type { storedMessageSchema } from "../../chat-history-contract"
 import type { ChatHistoryError, ChatHistoryPort } from "../../chat-history"
 
 type Fetch = typeof fetch
@@ -9,33 +14,6 @@ type Fetch = typeof fetch
 class ChatHistoryRequestError {
   constructor(readonly error: ChatHistoryError) {}
 }
-
-const storedMessageSchema = z.discriminatedUnion("role", [
-  z.object({ role: z.literal("user"), content: z.string() }),
-  z.object({
-    role: z.literal("assistant"),
-    content: z.string(),
-    toolCalls: z
-      .array(
-        z.object({
-          id: z.string(),
-          name: z.string(),
-          argumentsJson: z.string(),
-        })
-      )
-      .optional(),
-  }),
-  z.object({
-    role: z.literal("tool"),
-    toolCallId: z.string(),
-    content: z.string(),
-  }),
-])
-
-const startResponseSchema = z.object({
-  conversationId: z.string(),
-  messages: z.array(storedMessageSchema),
-})
 
 function historyError(code: ChatHistoryError["code"]): ChatHistoryError {
   return { code, retryable: code === "UNAVAILABLE" }
@@ -109,7 +87,7 @@ export class ConvexChatHistory implements ChatHistoryPort {
   startTurn(input: { conversationId: string | null; content: string }) {
     return this.request(
       { operation: "start", ...input },
-      startResponseSchema
+      chatHistoryStartResponseSchema
     ).andThen((response) => {
       const messages = response.messages.map(toAiMessage)
       if (messages.some((message) => message === null)) {
@@ -146,7 +124,7 @@ export class ConvexChatHistory implements ChatHistoryPort {
           "Content-Type": "application/json",
           "x-file-service-secret": this.context.serviceSecret,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(chatHistoryRequestSchema.parse(body)),
       }).then(async (response) => {
         if (!response.ok) {
           throw new ChatHistoryRequestError(
