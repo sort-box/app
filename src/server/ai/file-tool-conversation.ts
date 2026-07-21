@@ -1,4 +1,4 @@
-import { err, errAsync, ok } from "neverthrow"
+import { err, errAsync, ok, type ResultAsync } from "neverthrow"
 
 import type {
   AiMessage,
@@ -12,6 +12,7 @@ import type {
 } from "./ai-provider"
 import {
   fileToolDefinitions,
+  findExactReferencesInputSchema,
   listFilesInputSchema,
   readFileInputSchema,
   searchFilesInputSchema,
@@ -21,6 +22,12 @@ import {
 
 const MAX_TOOL_ROUNDS = 6
 const MAX_TOOL_CALLS_PER_ROUND = 8
+
+export interface AiMessageRecorder {
+  recordMessages: (
+    messages: readonly AiMessage[]
+  ) => ResultAsync<void, AiProviderError>
+}
 
 function invalidResponse(message: string): AiProviderError {
   return { code: "INVALID_RESPONSE", message }
@@ -63,6 +70,17 @@ async function executeToolCall(
     )
   }
 
+  if (call.name === "find_exact_references") {
+    const input = findExactReferencesInputSchema.safeParse(call.arguments)
+    if (!input.success) return JSON.stringify(invalidToolCall())
+    return JSON.stringify(
+      (await executor.findExactReferences(input.data)).match(
+        (value) => ({ ok: true as const, value }),
+        (error) => ({ ok: false as const, error })
+      )
+    )
+  }
+
   if (call.name === "read_file") {
     const input = readFileInputSchema.safeParse(call.arguments)
     if (!input.success) return JSON.stringify(invalidToolCall())
@@ -88,6 +106,7 @@ function addUsage(total: AiUsage | undefined, next: AiUsage | undefined) {
 async function* continueConversation(
   provider: AiProvider,
   executor: FileToolExecutor,
+  recorder: AiMessageRecorder | undefined,
   input: StreamConversationInput,
   firstStream: AiStream
 ): AiStream {
@@ -128,6 +147,15 @@ async function* continueConversation(
     }
 
     if (finish.reason !== "tool-calls") {
+      if (recorder && assistantContent.length > 0) {
+        const recorded = await recorder.recordMessages([
+          { role: "assistant", content: assistantContent },
+        ])
+        if (recorded.isErr()) {
+          yield err(recorded.error)
+          return
+        }
+      }
       yield ok({
         ...finish,
         ...(usageComplete && totalUsage ? { usage: totalUsage } : {}),
@@ -135,31 +163,67 @@ async function* continueConversation(
       return
     }
 
-    if (toolCalls.length === 0 || toolCalls.length > MAX_TOOL_CALLS_PER_ROUND) {
+    if (toolCalls.length === 0) {
       yield err(
-        invalidResponse("The AI provider requested an invalid number of tools.")
+        invalidResponse("The AI provider requested tools without valid calls.")
       )
       return
     }
     if (round === MAX_TOOL_ROUNDS - 1) {
-      yield err(
-        invalidResponse("The AI provider exceeded the file tool round limit.")
-      )
+      const limitMessage =
+        "\n\nI reached the per-response file-operation limit before I could finish. Ask me to continue with another batch or narrow the scope."
+      if (recorder) {
+        const recorded = await recorder.recordMessages([
+          {
+            role: "assistant",
+            content: `${assistantContent}${limitMessage}`,
+          },
+        ])
+        if (recorded.isErr()) {
+          yield err(recorded.error)
+          return
+        }
+      }
+      yield ok({
+        type: "text-delta",
+        text: limitMessage,
+      })
+      yield ok({
+        type: "finish",
+        reason: "stop",
+        ...(usageComplete && totalUsage ? { usage: totalUsage } : {}),
+      })
       return
     }
+
+    const callsToExecute = toolCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND)
 
     messages.push({
       role: "assistant",
       content: assistantContent,
-      toolCalls,
+      toolCalls: callsToExecute,
     })
     const toolResults = await Promise.all(
-      toolCalls.map(async (call) => ({
+      callsToExecute.map(async (call) => ({
         role: "tool" as const,
         toolCallId: call.id,
         content: await executeToolCall(call, executor),
       }))
     )
+    if (recorder) {
+      const recorded = await recorder.recordMessages([
+        {
+          role: "assistant",
+          content: assistantContent,
+          toolCalls: callsToExecute,
+        },
+        ...toolResults,
+      ])
+      if (recorded.isErr()) {
+        yield err(recorded.error)
+        return
+      }
+    }
     messages.push(...toolResults)
 
     const next = await provider.streamConversation({
@@ -180,7 +244,8 @@ async function* continueConversation(
 export class FileToolConversationService implements AiProvider {
   constructor(
     private readonly provider: AiProvider,
-    private readonly executor: FileToolExecutor
+    private readonly executor: FileToolExecutor,
+    private readonly recorder?: AiMessageRecorder
   ) {}
 
   streamConversation(input: StreamConversationInput) {
@@ -194,7 +259,13 @@ export class FileToolConversationService implements AiProvider {
     return this.provider
       .streamConversation({ ...input, tools: fileToolDefinitions })
       .map((stream) =>
-        continueConversation(this.provider, this.executor, input, stream)
+        continueConversation(
+          this.provider,
+          this.executor,
+          this.recorder,
+          input,
+          stream
+        )
       )
   }
 }

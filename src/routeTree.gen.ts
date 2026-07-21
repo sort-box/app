@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiRouteImport } from './routes/api'
+import { Route as ApiChatRouteImport } from './routes/api.chat'
 import { Route as ApiFilesRouteImport } from './routes/api.files'
 import { Route as ApiFoldersRouteImport } from './routes/api.folders'
 import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api.openapi[.]json'
@@ -33,6 +34,11 @@ const ApiRoute = ApiRouteImport.update({
   id: '/api',
   path: '/api',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ApiChatRoute = ApiChatRouteImport.update({
+  id: '/chat',
+  path: '/chat',
+  getParentRoute: () => ApiRoute,
 } as any)
 const ApiFilesRoute = ApiFilesRouteImport.update({
   id: '/files',
@@ -99,6 +105,7 @@ const ApiFilesFileIdEmbeddingsRetryRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api': typeof ApiRouteWithChildren
+  '/api/chat': typeof ApiChatRoute
   '/api/files': typeof ApiFilesRouteWithChildren
   '/api/folders': typeof ApiFoldersRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
@@ -115,6 +122,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api': typeof ApiRouteWithChildren
+  '/api/chat': typeof ApiChatRoute
   '/api/files': typeof ApiFilesRouteWithChildren
   '/api/folders': typeof ApiFoldersRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
@@ -132,6 +140,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/api': typeof ApiRouteWithChildren
+  '/api/chat': typeof ApiChatRoute
   '/api/files': typeof ApiFilesRouteWithChildren
   '/api/folders': typeof ApiFoldersRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
@@ -150,6 +159,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/api'
+    | '/api/chat'
     | '/api/files'
     | '/api/folders'
     | '/api/openapi.json'
@@ -166,6 +176,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/api'
+    | '/api/chat'
     | '/api/files'
     | '/api/folders'
     | '/api/openapi.json'
@@ -182,6 +193,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/api'
+    | '/api/chat'
     | '/api/files'
     | '/api/folders'
     | '/api/openapi.json'
@@ -218,6 +230,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api'
       preLoaderRoute: typeof ApiRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/api/chat': {
+      id: '/api/chat'
+      path: '/chat'
+      fullPath: '/api/chat'
+      preLoaderRoute: typeof ApiChatRouteImport
+      parentRoute: typeof ApiRoute
     }
     '/api/files': {
       id: '/api/files'
@@ -341,12 +360,14 @@ const ApiFilesRouteWithChildren = ApiFilesRoute._addFileChildren(
 )
 
 interface ApiRouteChildren {
+  ApiChatRoute: typeof ApiChatRoute
   ApiFilesRoute: typeof ApiFilesRouteWithChildren
   ApiFoldersRoute: typeof ApiFoldersRoute
   ApiOpenapiDotjsonRoute: typeof ApiOpenapiDotjsonRoute
 }
 
 const ApiRouteChildren: ApiRouteChildren = {
+  ApiChatRoute: ApiChatRoute,
   ApiFilesRoute: ApiFilesRouteWithChildren,
   ApiFoldersRoute: ApiFoldersRoute,
   ApiOpenapiDotjsonRoute: ApiOpenapiDotjsonRoute,

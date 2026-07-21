@@ -8,7 +8,10 @@ import type {
   AiStreamEvent,
   StreamConversationInput,
 } from "./ai-provider"
-import { FileToolConversationService } from "./file-tool-conversation"
+import {
+  FileToolConversationService,
+  type AiMessageRecorder,
+} from "./file-tool-conversation"
 import type { FileToolExecutor } from "./file-tools"
 
 async function* events(values: readonly AiStreamEvent[]): AiStream {
@@ -51,6 +54,15 @@ function executor(): FileToolExecutor {
         incomplete: false,
       })
     ),
+    findExactReferences: vi.fn(() =>
+      okAsync({
+        matches: [],
+        scanned_indexed_files: 1,
+        total_ready_files: 1,
+        unsearchable_ready_files: 0,
+        complete: true,
+      })
+    ),
     readFile: vi.fn(() =>
       okAsync({
         file: {
@@ -91,9 +103,13 @@ describe("FileToolConversationService", () => {
     ])
     const inner = provider([first, second])
     const tools = executor()
+    const recorder = {
+      recordMessages: vi.fn(() => okAsync(undefined)),
+    } satisfies AiMessageRecorder
     const result = await new FileToolConversationService(
       inner,
-      tools
+      tools,
+      recorder
     ).streamConversation({ messages: [{ role: "user", content: "Find it" }] })
 
     expect(result.isOk()).toBe(true)
@@ -109,6 +125,7 @@ describe("FileToolConversationService", () => {
     expect(continuation.tools?.map((tool) => tool.name)).toEqual([
       "list_files",
       "search_files",
+      "find_exact_references",
       "read_file",
     ])
     expect(continuation.messages.at(-1)).toMatchObject({
@@ -125,6 +142,23 @@ describe("FileToolConversationService", () => {
         matches: [{ file_id: "file-1", excerpt: "Revenue increased." }],
       },
     })
+    expect(recorder.recordMessages).toHaveBeenNthCalledWith(1, [
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "call-1",
+            name: "search_files",
+            arguments: { query: "revenue", limit: 5 },
+          },
+        ],
+      },
+      expect.objectContaining({ role: "tool", toolCallId: "call-1" }),
+    ])
+    expect(recorder.recordMessages).toHaveBeenNthCalledWith(2, [
+      { role: "assistant", content: "Revenue increased." },
+    ])
     expect(output.map((item) => item._unsafeUnwrap())).toEqual([
       {
         type: "tool-call",
@@ -248,5 +282,38 @@ describe("FileToolConversationService", () => {
 
     expect(result.isErr() && result.error.code).toBe("INVALID_INPUT")
     expect(inner.streamConversation).not.toHaveBeenCalled()
+  })
+
+  it("bounds excessive parallel tool calls instead of failing the turn", async () => {
+    const calls = Array.from({ length: 9 }, (_, index) => ({
+      id: `call-${index}`,
+      name: "list_files",
+      arguments: {},
+    }))
+    const inner = provider([
+      events([
+        ...calls.map((call): AiStreamEvent => ({ type: "tool-call", call })),
+        { type: "finish", reason: "tool-calls" },
+      ]),
+      events([
+        { type: "text-delta", text: "I checked the first batch." },
+        { type: "finish", reason: "stop" },
+      ]),
+    ])
+    const tools = executor()
+    const result = await new FileToolConversationService(
+      inner,
+      tools
+    ).streamConversation({ messages: [{ role: "user", content: "List" }] })
+
+    expect(result.isOk()).toBe(true)
+    if (result.isErr()) return
+    const output = await collect(result.value)
+
+    expect(tools.listFiles).toHaveBeenCalledTimes(8)
+    expect(output.at(-1)?._unsafeUnwrap()).toMatchObject({
+      type: "finish",
+      reason: "stop",
+    })
   })
 })

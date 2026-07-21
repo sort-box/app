@@ -562,7 +562,13 @@ export class FileRestService {
     recursive: boolean
     cursor: string | null
     limit: number
-  }): Promise<FileApiResult<unknown>> {
+  }): Promise<
+    FileApiResult<{
+      page: Array<PublicFileEntry>
+      isDone: boolean
+      continueCursor: string
+    }>
+  > {
     const path = parseDirectoryPath(input.path)
     if (!path.ok) return path
     const result = await this.privileged<{

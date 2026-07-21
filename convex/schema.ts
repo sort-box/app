@@ -1,6 +1,8 @@
 import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
 
+import { storedAiMessage } from "./chatSchemas"
+
 export const fileStatus = v.union(
   v.literal("pending"),
   v.literal("ready"),
@@ -29,6 +31,21 @@ export const embeddingErrorCode = v.union(
 )
 
 export default defineSchema({
+  chatConversations: defineTable({
+    ownerTokenIdentifier: v.string(),
+    /** Optional for conversations created before titles existed. */
+    title: v.optional(v.string()),
+    nextSequence: v.number(),
+    updatedAt: v.number(),
+  }).index("by_ownerTokenIdentifier_and_updatedAt", [
+    "ownerTokenIdentifier",
+    "updatedAt",
+  ]),
+  chatMessages: defineTable({
+    conversationId: v.id("chatConversations"),
+    sequence: v.number(),
+    payload: storedAiMessage,
+  }).index("by_conversationId_and_sequence", ["conversationId", "sequence"]),
   files: defineTable({
     ownerClerkUserId: v.string(),
     ownerTokenIdentifier: v.string(),

@@ -5,6 +5,7 @@ import type { AiToolDefinition, JsonValue } from "./ai-provider"
 
 const MAX_LIST_RESULTS = 100
 const MAX_SEARCH_RESULTS = 10
+const MAX_EXACT_SEARCH_RESULTS = 50
 const MAX_READ_CHUNKS = 20
 
 export const listFilesInputSchema = z
@@ -22,6 +23,15 @@ export const searchFilesInputSchema = z
   })
   .strict()
 
+export const findExactReferencesInputSchema = z
+  .object({
+    query: z.string().trim().min(1).max(1_000),
+    case_sensitive: z.boolean().optional(),
+    cursor: z.string().min(1).nullable().optional(),
+    limit: z.number().int().min(1).max(MAX_EXACT_SEARCH_RESULTS).optional(),
+  })
+  .strict()
+
 export const readFileInputSchema = z
   .object({
     file_id: z.string().min(1),
@@ -32,6 +42,9 @@ export const readFileInputSchema = z
 
 export type ListFilesInput = z.infer<typeof listFilesInputSchema>
 export type SearchFilesInput = z.infer<typeof searchFilesInputSchema>
+export type FindExactReferencesInput = z.infer<
+  typeof findExactReferencesInputSchema
+>
 export type ReadFileInput = z.infer<typeof readFileInputSchema>
 
 export type FileSourceLocation =
@@ -71,6 +84,20 @@ export type SearchFilesOutput = {
   warnings?: readonly ("RERANK_UNAVAILABLE" | "FILES_STILL_INDEXING")[]
 }
 
+export type FindExactReferencesOutput = {
+  matches: readonly {
+    file_id: string
+    path: string
+    occurrence_count: number
+    locations: readonly FileSourceLocation[]
+  }[]
+  scanned_indexed_files: number
+  total_ready_files: number
+  unsearchable_ready_files: number
+  complete: boolean
+  next_cursor?: string
+}
+
 export type ReadFileOutput = {
   file: {
     file_id: string
@@ -108,6 +135,9 @@ export interface FileToolExecutor {
   searchFiles: (
     input: SearchFilesInput
   ) => ResultAsync<SearchFilesOutput, FileToolError>
+  findExactReferences: (
+    input: FindExactReferencesInput
+  ) => ResultAsync<FindExactReferencesOutput, FileToolError>
   readFile: (input: ReadFileInput) => ResultAsync<ReadFileOutput, FileToolError>
 }
 
@@ -130,15 +160,23 @@ export const searchFilesTool = {
   inputSchema: inputSchema(searchFilesInputSchema),
 } satisfies AiToolDefinition
 
+export const findExactReferencesTool = {
+  name: "find_exact_references",
+  description:
+    "Find literal occurrences across the user's indexed files. Use this instead of semantic search for requests such as 'find all files containing X' or 'is X in my CV'. Returns one deduplicated match per file, occurrence counts, source locations, pagination, and corpus coverage. Continue with next_cursor until complete. Never describe the result as covering all stored files when unsearchable_ready_files is greater than zero.",
+  inputSchema: inputSchema(findExactReferencesInputSchema),
+} satisfies AiToolDefinition
+
 export const readFileTool = {
   name: "read_file",
   description:
-    "Read a page of normalized, extracted text from one user-owned file. Use this after listing or searching when more surrounding content is needed. Returns source-located chunks and an optional continuation cursor, never raw file bytes or download URLs.",
+    "Read a page of normalized, extracted text from one user-owned file. Use the file_id returned by list_files or search_files. If only a listed path is available, file_id may also be that exact path. Returns source-located chunks and an optional continuation cursor, never raw file bytes or download URLs.",
   inputSchema: inputSchema(readFileInputSchema),
 } satisfies AiToolDefinition
 
 export const fileToolDefinitions = [
   listFilesTool,
   searchFilesTool,
+  findExactReferencesTool,
   readFileTool,
 ] as const satisfies readonly AiToolDefinition[]

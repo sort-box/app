@@ -2,16 +2,18 @@ import { describe, expect, it } from "vitest"
 
 import {
   fileToolDefinitions,
+  findExactReferencesInputSchema,
   listFilesInputSchema,
   readFileInputSchema,
   searchFilesInputSchema,
 } from "./file-tools"
 
 describe("file tool definitions", () => {
-  it("publishes the three read-only file tools", () => {
+  it("publishes the four read-only file tools", () => {
     expect(fileToolDefinitions.map((tool) => tool.name)).toEqual([
       "list_files",
       "search_files",
+      "find_exact_references",
       "read_file",
     ])
   })
@@ -42,6 +44,24 @@ describe("file tool input validation", () => {
       true
     )
     expect(searchFilesInputSchema.safeParse({ query: " " }).success).toBe(false)
+  })
+
+  it("requires a non-blank exact query and bounds its result page", () => {
+    expect(
+      findExactReferencesInputSchema.safeParse({
+        query: "momentum",
+        case_sensitive: true,
+        limit: 50,
+      }).success
+    ).toBe(true)
+    expect(
+      findExactReferencesInputSchema.safeParse({ query: " ", limit: 50 })
+        .success
+    ).toBe(false)
+    expect(
+      findExactReferencesInputSchema.safeParse({ query: "momentum", limit: 51 })
+        .success
+    ).toBe(false)
   })
 
   it("requires a file id and bounds read pagination", () => {

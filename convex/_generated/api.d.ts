@@ -8,7 +8,10 @@
  * @module
  */
 
+import type * as aiFileTools from "../aiFileTools.js";
 import type * as aiUsage from "../aiUsage.js";
+import type * as chatHistory from "../chatHistory.js";
+import type * as chatSchemas from "../chatSchemas.js";
 import type * as crons from "../crons.js";
 import type * as documentEmbedding from "../documentEmbedding.js";
 import type * as documentEmbeddingAction from "../documentEmbeddingAction.js";
@@ -29,7 +32,10 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  aiFileTools: typeof aiFileTools;
   aiUsage: typeof aiUsage;
+  chatHistory: typeof chatHistory;
+  chatSchemas: typeof chatSchemas;
   crons: typeof crons;
   documentEmbedding: typeof documentEmbedding;
   documentEmbeddingAction: typeof documentEmbeddingAction;
