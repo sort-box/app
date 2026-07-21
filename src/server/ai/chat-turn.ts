@@ -31,7 +31,8 @@ async function* lazyConversation(input: {
 }): AiStream {
   const started = await input.conversation.streamConversation(
     input.messages,
-    new ChatHistoryMessageRecorder(input.history, input.conversationId)
+    new ChatHistoryMessageRecorder(input.history, input.conversationId),
+    input.conversationId
   )
   if (started.isErr()) {
     yield err(started.error)

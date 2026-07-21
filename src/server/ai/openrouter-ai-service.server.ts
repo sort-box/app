@@ -15,6 +15,7 @@ import { OpenRouterAiProvider } from "./providers/openrouter/openrouter-ai-provi
 
 export type OpenRouterAiServiceContext = {
   authToken: string
+  convexUrl: string
   convexSiteUrl: string
   openRouterApiKey: string
   serviceSecret: string
@@ -29,6 +30,7 @@ function chatConfiguration(
 ): Result<OpenRouterAiServiceContext, AiProviderError> {
   const context: OpenRouterAiServiceContext = {
     authToken: fileApi.authToken,
+    convexUrl: import.meta.env.VITE_CONVEX_URL ?? "",
     convexSiteUrl: import.meta.env.VITE_CONVEX_SITE_URL ?? "",
     openRouterApiKey: process.env.OPENROUTER_API_KEY ?? "",
     serviceSecret: process.env.FILE_SERVICE_SECRET ?? "",
@@ -64,6 +66,9 @@ export function createChatTurnService(
   return chatConfiguration(fileApi).map((context) => {
     const gateway = new ConvexFileToolGateway(new FileRestService(fileApi), {
       authToken: context.authToken,
+      getAuthToken: fileApi.getAuthToken,
+      client: fileApi.client,
+      convexUrl: context.convexUrl,
       convexSiteUrl: context.convexSiteUrl,
       serviceSecret: context.serviceSecret,
     })
@@ -78,6 +83,7 @@ export function createChatTurnService(
     )
     const history = new ConvexChatHistory({
       authToken: context.authToken,
+      getAuthToken: fileApi.getAuthToken,
       convexSiteUrl: context.convexSiteUrl,
       serviceSecret: context.serviceSecret,
     })

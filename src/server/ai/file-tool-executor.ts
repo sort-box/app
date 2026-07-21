@@ -1,4 +1,4 @@
-import { okAsync, type ResultAsync } from "neverthrow"
+import { errAsync, okAsync, type ResultAsync } from "neverthrow"
 
 import type { RerankingPort } from "../search/reranking"
 import type {
@@ -12,6 +12,7 @@ import type {
   ListFilesOutput,
   ReadFileInput,
   ReadFileOutput,
+  ProposeFileOrganizationInput,
   SearchFilesInput,
   SearchFilesOutput,
 } from "./file-tools"
@@ -28,9 +29,14 @@ export type FileToolGatewayError = {
     | "NOT_AUTHENTICATED"
     | "FILE_NOT_FOUND"
     | "CONTENT_NOT_INDEXED"
+    | "PLAN_NOT_APPLICABLE"
+    | "PLAN_STALE"
+    | "PATH_CONFLICT"
+    | "SCOPE_TOO_LARGE"
     | "RATE_LIMITED"
     | "UNAVAILABLE"
   retryable: boolean
+  message?: string
 }
 
 export type FileEntrySummary = {
@@ -103,6 +109,13 @@ export interface FileToolGateway {
     cursor: string | null
     limit: number
   }) => ResultAsync<FileChunkPage, FileToolGatewayError>
+  proposeOrganization: (input: {
+    conversationId: string
+    previousPlanId?: string
+    summary: string
+    warnings: readonly string[]
+    operations: readonly { beforePath: string; afterPath: string }[]
+  }) => ResultAsync<{ planId: string; revision: number }, FileToolGatewayError>
 }
 
 const toolErrorMessages: Record<FileToolGatewayError["code"], string> = {
@@ -110,6 +123,10 @@ const toolErrorMessages: Record<FileToolGatewayError["code"], string> = {
   NOT_AUTHENTICATED: "Authentication is required.",
   FILE_NOT_FOUND: "The file was not found.",
   CONTENT_NOT_INDEXED: "The file content is not indexed yet.",
+  PLAN_NOT_APPLICABLE: "The proposal can no longer be revised.",
+  PLAN_STALE: "The proposal no longer matches the current file tree.",
+  PATH_CONFLICT: "A proposed destination is occupied.",
+  SCOPE_TOO_LARGE: "The organization scope is too large.",
   RATE_LIMITED: "Too many file requests.",
   UNAVAILABLE: "The file service is temporarily unavailable.",
 }
@@ -117,7 +134,7 @@ const toolErrorMessages: Record<FileToolGatewayError["code"], string> = {
 function toolError(error: FileToolGatewayError): FileToolError {
   return {
     code: error.code,
-    message: toolErrorMessages[error.code],
+    message: error.message ?? toolErrorMessages[error.code],
     retryable: error.retryable,
   }
 }
@@ -163,12 +180,28 @@ export class FileToolExecutorService implements FileToolExecutor {
   listFiles(
     input: ListFilesInput
   ): ResultAsync<ListFilesOutput, FileToolError> {
+    const requestedPath = input.path ?? "/"
+    const path =
+      requestedPath === "~"
+        ? "/"
+        : requestedPath.startsWith("~/")
+          ? `/${requestedPath.slice(2)}`
+          : requestedPath
     return this.gateway
       .listEntries({
-        path: input.path ?? "/",
+        path,
         cursor: input.cursor ?? null,
         limit: input.limit ?? DEFAULT_LIST_LIMIT,
       })
+      .orElse((error) =>
+        input.cursor && error.code === "INVALID_INPUT"
+          ? this.gateway.listEntries({
+              path,
+              cursor: null,
+              limit: input.limit ?? DEFAULT_LIST_LIMIT,
+            })
+          : errAsync(error)
+      )
       .map(({ entries, nextCursor }) => ({
         entries: entries.map((entry) => ({
           ...(entry.fileId !== undefined ? { file_id: entry.fileId } : {}),
@@ -280,6 +313,27 @@ export class FileToolExecutorService implements FileToolExecutor {
           ? { next_cursor: page.nextCursor }
           : {}),
       }))
+      .mapErr(toolError)
+  }
+
+  proposeFileOrganization(
+    input: ProposeFileOrganizationInput,
+    conversationId: string
+  ): ResultAsync<{ plan_id: string; revision: number }, FileToolError> {
+    return this.gateway
+      .proposeOrganization({
+        conversationId,
+        ...(input.previous_plan_id
+          ? { previousPlanId: input.previous_plan_id }
+          : {}),
+        summary: input.summary,
+        warnings: input.warnings ?? [],
+        operations: input.operations.map((operation) => ({
+          beforePath: operation.before_path,
+          afterPath: operation.after_path,
+        })),
+      })
+      .map((value) => ({ plan_id: value.planId, revision: value.revision }))
       .mapErr(toolError)
   }
 }

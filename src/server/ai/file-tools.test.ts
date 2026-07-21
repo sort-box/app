@@ -9,12 +9,13 @@ import {
 } from "./file-tools"
 
 describe("file tool definitions", () => {
-  it("publishes the four read-only file tools", () => {
+  it("publishes the file tools", () => {
     expect(fileToolDefinitions.map((tool) => tool.name)).toEqual([
       "list_files",
       "search_files",
       "find_exact_references",
       "read_file",
+      "propose_file_organization",
     ])
   })
 
@@ -26,6 +27,26 @@ describe("file tool definitions", () => {
       })
       expect(tool.inputSchema).not.toHaveProperty("$schema")
     }
+  })
+
+  it("requires content evidence for ambiguous organization decisions", () => {
+    const list = fileToolDefinitions.find((tool) => tool.name === "list_files")
+    const read = fileToolDefinitions.find((tool) => tool.name === "read_file")
+    const propose = fileToolDefinitions.find(
+      (tool) => tool.name === "propose_file_organization"
+    )
+
+    expect(read?.description).toContain(
+      "always call this if there is any doubt"
+    )
+    expect(propose?.description).toContain("Read ambiguous files")
+    expect(propose?.description).toContain("leave it unmoved")
+    expect(list?.description).toContain(
+      "unavailable means the contents cannot currently be searched or read"
+    )
+    expect(propose?.description).toContain(
+      "does not prevent moving or renaming"
+    )
   })
 })
 

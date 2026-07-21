@@ -73,6 +73,7 @@ function toStoredMessage(message: AiMessage) {
 
 export type ConvexChatHistoryContext = {
   authToken: string
+  getAuthToken?: () => Promise<string | null>
   convexSiteUrl: string
   serviceSecret: string
 }
@@ -117,15 +118,19 @@ export class ConvexChatHistory implements ChatHistoryPort {
   private request<T>(body: Record<string, unknown>, schema: z.ZodType<T>) {
     const siteUrl = this.context.convexSiteUrl.replace(/\/$/, "")
     return ResultAsync.fromPromise(
-      this.fetch(`${siteUrl}/internal/ai/chat-history`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.context.authToken}`,
-          "Content-Type": "application/json",
-          "x-file-service-secret": this.context.serviceSecret,
-        },
-        body: JSON.stringify(chatHistoryRequestSchema.parse(body)),
-      }).then(async (response) => {
+      (async () => {
+        const authToken =
+          (await this.context.getAuthToken?.()) ?? this.context.authToken
+        return await this.fetch(`${siteUrl}/internal/ai/chat-history`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            "Content-Type": "application/json",
+            "x-file-service-secret": this.context.serviceSecret,
+          },
+          body: JSON.stringify(chatHistoryRequestSchema.parse(body)),
+        })
+      })().then(async (response) => {
         if (!response.ok) {
           throw new ChatHistoryRequestError(
             historyError(response.status === 404 ? "NOT_FOUND" : "UNAVAILABLE")

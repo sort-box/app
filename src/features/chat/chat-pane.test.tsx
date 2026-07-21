@@ -21,6 +21,11 @@ import { ChatPane } from "./chat-pane"
 import { ChatApiError, streamChat } from "./api"
 import type * as ApiModule from "./api"
 
+vi.mock("convex/react", () => ({
+  useQuery: () => undefined,
+  useMutation: () => vi.fn(),
+}))
+
 vi.mock("./api", async (importOriginal) => ({
   ...(await importOriginal<typeof ApiModule>()),
   streamChat: vi.fn(),

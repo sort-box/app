@@ -39,6 +39,7 @@ export type AiUsage = {
 export type AiStreamEvent =
   | { type: "text-delta"; text: string }
   | { type: "tool-call"; call: AiToolCall }
+  | { type: "organization-proposal"; planId: string; revision: number }
   | {
       type: "finish"
       reason: "stop" | "tool-calls" | "length"
